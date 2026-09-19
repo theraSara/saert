@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+naturalstories/
+data/
+paper/
+
+# Local editor/system files
+.DS_Store
+.vscode/
+
+# Large generated arrays; regenerate locally with the pipeline.
+results/surprisal/*.npy
+results/sae/*.npz

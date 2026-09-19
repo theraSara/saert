@@ -1,0 +1,95 @@
+══════════════════════════════════════════════════════════════
+  BASELINE REGRESSION — PROVO
+  N = 2,630 words  |  DV = log(RT ms)
+  Exclusions: RT<100ms or >3000ms; NaN surprisal
+  Controls: zipf_freq, word_length, is_sentence_final
+══════════════════════════════════════════════════════════════
+  Predictor                     β       SE        t          p
+──────────────────────────────────────────────────────────────
+  zipf_freq               -0.0284   0.0034   -8.247     0.0000 ***
+  word_length              0.0059   0.0031    1.900     0.0575 
+  is_sentence_final        0.0024   0.0026    0.913     0.3614 
+  surprisal                0.0120   0.0025    4.866     0.0000 ***
+──────────────────────────────────────────────────────────────
+
+  In-sample model comparison (R²):
+──────────────────────────────────────────────────────────────
+  Controls only:     0.1483
+  + Surprisal:       0.1560
+  ΔR² surprisal:     0.0077  (0.77% unique variance)
+
+  Grouped held-out model comparison (R²):
+──────────────────────────────────────────────────────────────
+  Controls only:     0.1457 [0.1189, 0.1693]
+  + Surprisal:       0.1530 [0.1241, 0.1775]
+  ΔR² surprisal:     0.0073
+
+  Surprisal (bits):
+    Mean 6.235   Median 5.276   SD 4.724
+
+  RT' distribution:
+    Mean 5.3321   SD 0.0985   Skew -0.280
+    Corr(surprisal, RT') = 0.0742
+    Sentence-final words: 110 | Mean RT (final): 217.6 ms vs (non-final): 207.6 ms
+══════════════════════════════════════════════════════════════
+
+=== FULL MODEL (statsmodels) ===
+
+                            OLS Regression Results                            
+==============================================================================
+Dep. Variable:         log_primary_RT   R-squared:                       0.156
+Model:                            OLS   Adj. R-squared:                  0.155
+Method:                 Least Squares   F-statistic:                     119.1
+Date:                Tue, 15 Sep 2026   Prob (F-statistic):           1.75e-93
+Time:                        10:31:34   Log-Likelihood:                 2376.5
+No. Observations:                2630   AIC:                            -4743.
+Df Residuals:                    2625   BIC:                            -4714.
+Df Model:                           4                                         
+Covariance Type:                  HC3                                         
+=======================================================================================
+                          coef    std err          z      P>|z|      [0.025      0.975]
+---------------------------------------------------------------------------------------
+Intercept               5.3321      0.002   2783.424      0.000       5.328       5.336
+zipf_freq_z            -0.0284      0.003     -8.247      0.000      -0.035      -0.022
+word_length_z           0.0059      0.003      1.900      0.057      -0.000       0.012
+is_sentence_final_z     0.0024      0.003      0.913      0.361      -0.003       0.007
+surprisal_z             0.0120      0.002      4.866      0.000       0.007       0.017
+==============================================================================
+Omnibus:                       83.253   Durbin-Watson:                   1.725
+Prob(Omnibus):                  0.000   Jarque-Bera (JB):              142.509
+Skew:                          -0.266   Prob(JB):                     1.13e-31
+Kurtosis:                       4.009   Cond. No.                         3.45
+==============================================================================
+
+Notes:
+[1] Standard Errors are heteroscedasticity robust (HC3)
+
+=== CONTROLS-ONLY MODEL ===
+
+                            OLS Regression Results                            
+==============================================================================
+Dep. Variable:         log_primary_RT   R-squared:                       0.148
+Model:                            OLS   Adj. R-squared:                  0.147
+Method:                 Least Squares   F-statistic:                     149.9
+Date:                Tue, 15 Sep 2026   Prob (F-statistic):           1.12e-89
+Time:                        10:31:34   Log-Likelihood:                 2364.6
+No. Observations:                2630   AIC:                            -4721.
+Df Residuals:                    2626   BIC:                            -4698.
+Df Model:                           3                                         
+Covariance Type:                  HC3                                         
+=======================================================================================
+                          coef    std err          z      P>|z|      [0.025      0.975]
+---------------------------------------------------------------------------------------
+Intercept               5.3321      0.002   2771.976      0.000       5.328       5.336
+zipf_freq_z            -0.0359      0.003    -11.805      0.000      -0.042      -0.030
+word_length_z           0.0060      0.003      1.929      0.054   -9.67e-05       0.012
+is_sentence_final_z     0.0018      0.003      0.701      0.484      -0.003       0.007
+==============================================================================
+Omnibus:                       82.247   Durbin-Watson:                   1.713
+Prob(Omnibus):                  0.000   Jarque-Bera (JB):              133.658
+Skew:                          -0.280   Prob(JB):                     9.47e-30
+Kurtosis:                       3.952   Cond. No.                         2.92
+==============================================================================
+
+Notes:
+[1] Standard Errors are heteroscedasticity robust (HC3)
