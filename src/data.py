@@ -1,322 +1,254 @@
+"""Prepare complete stimuli and aggregate RT observations without changing context."""
 
 import argparse
-import os
-import re
-import warnings
+import json
 from pathlib import Path
+import re
+import tempfile
+import uuid
 import numpy as np
 import pandas as pd
-from transformers import GPT2TokenizerFast
-from wordfreq import word_frequency, zipf_frequency
-from tqdm import tqdm
-warnings.filterwarnings("ignore")
+
+try:
+    from .pipeline_utils import (KEYS, file_record, normalize_words, numeric, read_table,
+                                 run_metadata, tokenize_words, tokenizer_hash,
+                                 validate_word_matches, write_json)
+except ImportError:
+    from pipeline_utils import (KEYS, file_record, normalize_words, numeric, read_table,
+                                run_metadata, tokenize_words, tokenizer_hash,
+                                validate_word_matches, write_json)
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
-PROVO_DIR = DATA_DIR / "provo"
-NS_DIR = DATA_DIR / "natural_stories"
-
-print("Loading GPT-2 tokenizer...")
-tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
-tokenizer.pad_token = tokenizer.eos_token
-
-def get_word_frequency(word: str) -> float:
-    return zipf_frequency(word.lower(), "en")
-
-def get_unigram_frequency(word: str) -> float:
-    freq = word_frequency(word.lower(), "en", wordlist="large")
-    return np.log10(freq + 1e-10)  # avoid log(0)
-
-def build_text_and_word_offsets(words: list[str]) -> tuple[str, list[tuple[int, int]]]:
-    parts = []
-    spans = []
-    cursor = 0
-    for i, word in enumerate(words):
-        if i > 0:
-            parts.append(" ")
-            cursor += 1
-        word = "" if pd.isna(word) else str(word)
-        start = cursor
-        parts.append(word)
-        cursor += len(word)
-        spans.append((start, cursor))
-    return "".join(parts), spans
+RT_COLUMNS = {"FFD": "IA_FIRST_FIXATION_DURATION", "GZD": "IA_FIRST_RUN_DWELL_TIME",
+              "TRT": "IA_DWELL_TIME"}
 
 
-def align_words_to_gpt2_tokens(words: list[str]) -> list[dict]:
-    full_text, word_offsets = build_text_and_word_offsets(words)
-    encoding = tokenizer(
-        full_text,
-        return_offsets_mapping=True,
-        add_special_tokens=False,
-    )
-    token_ids = encoding["input_ids"]
-    token_offsets = encoding["offset_mapping"]
+def clean_word(word):
+    return re.sub(r"^[^\w']+|[^\w']+$", "", word).lower()
 
-    aligned = []
-    for word_idx, (word, (word_start, word_end)) in enumerate(zip(words, word_offsets)):
-        tok_indices = [
-            tok_idx
-            for tok_idx, (tok_start, tok_end) in enumerate(token_offsets)
-            if tok_end > tok_start and tok_start < word_end and tok_end > word_start
-        ]
-        if not tok_indices:
-            print(f"    Warning: word {word_idx} ({word!r}) matched no tokens")
-            start_token_idx = -1
-            end_token_idx = -1
-            span_ids = []
-            span_strs = []
-        else:
-            start_token_idx = tok_indices[0]
-            end_token_idx = tok_indices[-1]
-            span_ids = token_ids[start_token_idx: end_token_idx + 1]
-            span_strs = [tokenizer.decode([t]) for t in span_ids]
-        aligned.append({
-            "word":            word,
-            "token_ids":       span_ids,
-            "token_strs":      span_strs,
-            "n_tokens":        len(tok_indices),
-            "start_token_idx": start_token_idx,
-            "end_token_idx":   end_token_idx,
-        })
-    return aligned
 
-def load_provo() -> pd.DataFrame:
-    et_path = PROVO_DIR / "Provo_Corpus-Eyetracking_Data.csv"
-    if not et_path.exists():
-        raise FileNotFoundError(
-            f"Provo eye-tracking data not found at {et_path}\n"
-            "Download from https://osf.io/sjefs/ and place in data/provo/"
-        )
+def load_stimuli(path):
+    # Norms files can repeat words; conflicting forms must not be collapsed.
+    raw = normalize_words(read_table(path), str(path), unique=False)
+    raw = raw[KEYS + ["word"]].drop_duplicates()
+    return normalize_words(raw, str(path), complete=True)
 
-    print("Loading Provo corpus...")
-    et = pd.read_csv(et_path)
-    col_map = {
-        "Text_ID": "text_id",
-        "Word_Number": "word_position",
-        "Word": "word",
-        "IA_FIRST_FIXATION_DURATION": "FFD",
-        "IA_GAZE_DURATION": "GZD",
-        "IA_DWELL_TIME": "TRT",
-        "Part_ID": "participant_id",
+
+def prepare_provo(stimulus_path, rt_path, measure, rt_column=None, participant_column=None,
+                  rt_min=None, rt_max=None):
+    raw = read_table(rt_path)
+    has_regions = {"IA_ID", "IA_LABEL"}.issubset(raw.columns)
+    if has_regions:
+        # Norm-based Word_Number/Word can be missing or differ from the actual
+        # eye-tracking interest areas. Preserve them, but never use them as RT keys.
+        raw = raw.rename(columns={"Word_Number": "norm_word_position", "Word": "norm_word"})
+        raw["word_position"] = raw["IA_ID"]
+        raw["word"] = raw["IA_LABEL"].str.strip()
+    trials = normalize_words(raw, "Provo eye tracking", unique=False)
+    if stimulus_path is None:
+        if not has_regions:
+            raise ValueError("Provo needs IA_ID/IA_LABEL or an explicit complete stimulus table")
+        stimuli = normalize_words(trials[KEYS + ["word"]].drop_duplicates(),
+                                  "Provo presented interest areas", complete=True)
+    else:
+        stimuli = load_stimuli(stimulus_path)
+    if participant_column is None:
+        participant_column = "Participant_ID" if "Participant_ID" in trials else "Part_ID"
+    validate_word_matches(stimuli, trials, "Provo")
+    column = rt_column or RT_COLUMNS[measure]
+    if column not in trials:
+        raise ValueError(f"Requested {measure} requires {column!r}; available columns: "
+                         f"{list(trials.columns)}. No alternative RT measure will be substituted.")
+    if participant_column not in trials or trials[participant_column].astype(str).str.strip().eq("").any():
+        raise ValueError(f"Missing participant IDs in {participant_column!r}")
+    if trials.duplicated([participant_column] + KEYS).any():
+        raise ValueError("Duplicate Provo participant x word rows; resolve before aggregation")
+    raw_rt = numeric(trials[column], column)
+    reason = pd.Series("included", index=trials.index)
+    reason.loc[raw_rt.isna()] = "missing"
+    reason.loc[raw_rt.le(0)] = "nonpositive"
+    if rt_min is not None:
+        reason.loc[raw_rt.gt(0) & raw_rt.lt(rt_min)] = "below_min"
+    if rt_max is not None:
+        reason.loc[raw_rt.gt(rt_max)] = "above_max"
+    trials["participant_id"] = trials[participant_column].astype(str)
+    trials["raw_RT"] = raw_rt
+    trials["rt_status"] = reason
+    trials["analysis_RT"] = raw_rt.where(reason.eq("included"))
+    trials["log_analysis_RT"] = np.log(trials["analysis_RT"])
+    aggregate = trials.groupby(KEYS, as_index=False).agg(
+        primary_RT=("analysis_RT", "mean"), n_participants=("analysis_RT", "count"),
+        sdRT=("analysis_RT", "std"), mean_log_RT=("log_analysis_RT", "mean"),
+        n_trials=("raw_RT", "size"))
+    prepared = stimuli.merge(aggregate, on=KEYS, how="left", validate="one_to_one")
+    for col in ["n_participants", "n_trials"]:
+        prepared[col] = prepared[col].fillna(0).astype(int)
+    prepared[measure] = prepared["primary_RT"]
+    prepared["rt_measure"] = measure
+    prepared["rt_source_column"] = column
+    prepared["stimulus_unit"] = "interest_area" if has_regions else "word"
+    trials["rt_measure"] = measure
+    inputs = {"rt": file_record(rt_path)}
+    if stimulus_path is not None:
+        inputs["stimuli"] = file_record(stimulus_path)
+    return prepared, trials, inputs, {
+        "measure": measure, "source_column": column, "rt_min_ms": rt_min, "rt_max_ms": rt_max,
+        "participant_column": participant_column,
+        "stimulus_source": "external table" if stimulus_path is not None else "unique Text_ID/IA_ID/IA_LABEL from eye-tracking file",
+        "position_source": "IA_ID" if has_regions else "Word_Number or word_position",
+        "word_source": "IA_LABEL, surrounding whitespace stripped" if has_regions else "Word or word",
+        "norm_metadata": "Original Word_Number and Word retained as norm_word_position and norm_word in participant output" if has_regions else "unchanged",
+        "trial_status_counts": reason.value_counts().to_dict(),
+        "participant_exclusions": "No new participant-quality exclusions; source rows retained",
+        "skipping": "Nonpositive/missing durations excluded from duration means; stimuli retained",
     }
-    cols_present = {k: v for k, v in col_map.items() if k in et.columns}
-    et = et[list(cols_present.keys())].rename(columns=cols_present)
-    rt_cols = [c for c in ["FFD", "GZD", "TRT"] if c in et.columns]
-    agg_dict = {c: "mean" for c in rt_cols}
-    agg_dict["word"] = "first"
-    provo = (
-        et.groupby(["text_id", "word_position"])
-        .agg(agg_dict)
-        .reset_index()
-    )
-    provo["word_clean"] = provo["word"].apply(clean_word)
-
-    print("  Adding frequency measures...")
-    provo["zipf_freq"] = provo["word_clean"].apply(get_word_frequency)
-    provo["log_unigram_freq"] = provo["word_clean"].apply(get_unigram_frequency)
-    provo["word_length"] = provo["word_clean"].apply(len)
-    provo["word_position"] = provo["word_position"].astype(int)
-
-    print("  Aligning tokens per text...")
-    provo = add_token_alignment_provo(provo)
-
-    for col in rt_cols:
-        if col in provo.columns:
-            provo[f"log_{col}"] = np.log(provo[col].clip(lower=1))
-
-    primary_rt = "GZD" if "GZD" in provo.columns else rt_cols[0]
-    n_missing = provo[primary_rt].isna().sum()
-    print(f"  Kept complete stimulus context; {n_missing} rows have missing RT")
-    provo["corpus"] = "provo"
-    provo["primary_RT"] = provo[primary_rt]
-    provo["log_primary_RT"] = np.log(provo["primary_RT"].clip(lower=1))
-    provo["row_uid"] = make_row_uid("provo", provo)
-    print(f"  Provo prepared: {len(provo)} word-level observations across {provo['text_id'].nunique()} texts")
-
-    return provo
-
-def add_token_alignment_provo(df: pd.DataFrame) -> pd.DataFrame:
-    results = []
-    for text_id, group in tqdm(df.groupby("text_id"), desc="  Token alignment"):
-        group = group.sort_values("word_position")
-        words = group["word"].tolist()
-        try:
-            aligned = align_words_to_gpt2_tokens(words)
-        except Exception as e:
-            print(f"    Warning: tokenization failed for text {text_id}: {e}")
-            aligned = [{"token_ids": [], "n_tokens": 1,
-                        "start_token_idx": i, "end_token_idx": i} for i in range(len(words))]
-        for i, row_dict in enumerate(aligned):
-            results.append({
-                "text_id": text_id,
-                "word_position": group.iloc[i]["word_position"],
-                "token_ids_str": str(row_dict["token_ids"]),  
-                "n_tokens": row_dict["n_tokens"],
-                "start_token_idx": row_dict["start_token_idx"],
-                "end_token_idx": row_dict["end_token_idx"],
-            })
-    token_df = pd.DataFrame(results)
-    df = df.merge(token_df, on=["text_id", "word_position"], how="left")
-    return df
-
-def load_natural_stories() -> pd.DataFrame:
-    wordinfo_path = NS_DIR / "processed_wordinfo.tsv"
-    tok_path = NS_DIR / "all_stories.tok"
-    if not wordinfo_path.exists():
-        raise FileNotFoundError(
-            f"Natural Stories word info not found at {wordinfo_path}\n"
-            "Expected file: processed_wordinfo.tsv\n"
-        )
-    if not tok_path.exists():
-        raise FileNotFoundError(
-            f"Natural Stories token file not found at {tok_path}\n"
-            "Expected file: all_stories.tok\n"
-        )
-    print("Loading Natural Stories corpus...")
-    wordinfo = pd.read_csv(wordinfo_path, sep="\t")
-    wordinfo.columns = [c.strip() for c in wordinfo.columns]
-
-    tok = pd.read_csv(tok_path, sep="\t")
-    tok.columns = [c.strip() for c in tok.columns]
-    wordinfo_keys = set(zip(wordinfo["item"], wordinfo["zone"]))
-    tok_keys = set(zip(tok["item"], tok["zone"]))
-    only_in_tok = tok_keys - wordinfo_keys
-    only_in_wordinfo = wordinfo_keys - tok_keys
-    if only_in_tok:
-        print(f"  Note: {len(only_in_tok)} positions in all_stories.tok have no RT")
-    if only_in_wordinfo:
-        print(f"  Warning: {len(only_in_wordinfo)} positions in processed_wordinfo.tsv "
-              f"have no matching token in all_stories.tok ")
-
-    ns = wordinfo.rename(columns={
-        "item":        "text_id",
-        "zone":        "word_position",
-        "meanItemRT":  "RT",
-        "sdItemRT":    "sdRT",
-        "gmeanItemRT": "gRT",
-        "gsdItemRT":   "gsdRT",
-        "nItem":       "n_participants",
-    })
-
-    tok_ordered = (
-        tok.rename(columns={"item": "text_id", "zone": "word_position"}).sort_values(["text_id", "word_position"])
-    )
-    tok_out_path = NS_DIR / "story_token_order.csv"
-    tok_ordered.to_csv(tok_out_path, index=False)
-    print(f"  Full story token order saved → {tok_out_path}")
-    n_missing = ns["RT"].isna().sum()
-    print(f"  Kept complete RT table; {n_missing} rows have missing RT")
-
-    ns["word_clean"] = ns["word"].apply(clean_word)
-
-    print("  Adding frequency measures...")
-    ns["zipf_freq"] = ns["word_clean"].apply(get_word_frequency)
-    ns["log_unigram_freq"] = ns["word_clean"].apply(get_unigram_frequency)
-    ns["word_length"] = ns["word_clean"].apply(len)
-
-    print("  Aligning tokens per story...")
-    ns = add_token_alignment_ns(ns, tok_ordered)
-    ns["log_RT"] = np.log(ns["RT"].clip(lower=1))
-    ns["log_gRT"] = np.log(ns["gRT"].clip(lower=1))
-    ns["corpus"] = "natural_stories"
-    ns["primary_RT"] = ns["RT"]         
-    ns["log_primary_RT"] = ns["log_RT"]
-    ns["row_uid"] = make_row_uid("natural_stories", ns)
-
-    print(f"  Natural Stories prepared: {len(ns):,} word-level observations across {ns['text_id'].nunique()} stories")
-
-    return ns
-
-def add_token_alignment_ns(df: pd.DataFrame, tok_ordered: pd.DataFrame) -> pd.DataFrame:
-    results = []
-    for text_id, full_group in tqdm(
-        tok_ordered.groupby("text_id"), desc="  Token alignment"
-    ):
-        full_group = full_group.sort_values("word_position")
-        all_words = full_group["word"].fillna("").tolist()
-        all_positions = full_group["word_position"].tolist()
-
-        try:
-            aligned = align_words_to_gpt2_tokens(all_words)
-        except Exception as e:
-            print(f"    Warning: tokenization failed for story {text_id}: {e}")
-            aligned = [{"token_ids": [], "n_tokens": 1,
-                        "start_token_idx": i, "end_token_idx": i} for i in range(len(all_words))]
-
-        for i, row_dict in enumerate(aligned):
-            results.append({
-                "text_id": text_id,
-                "word_position": all_positions[i],
-                "token_ids_str": str(row_dict["token_ids"]),
-                "n_tokens": row_dict["n_tokens"],
-                "start_token_idx": row_dict["start_token_idx"],
-                "end_token_idx": row_dict["end_token_idx"],
-            })
-
-    token_df = pd.DataFrame(results)
-    df = df.merge(token_df, on=["text_id", "word_position"], how="left")
-    return df
-
-def clean_word(word: str) -> str:
-    if not isinstance(word, str):
-        return ""
-    word = re.sub(r"^[^\w']+|[^\w']+$", "", word)
-    return word.lower()
 
 
-def make_row_uid(corpus: str, df: pd.DataFrame) -> pd.Series:
-    return (
-        corpus
-        + ":"
-        + df["text_id"].astype(str)
-        + ":"
-        + df["word_position"].astype(int).astype(str)
-    )
+def prepare_natural_stories(directory):
+    directory = Path(directory)
+    tok_path, info_path = directory / "all_stories.tok", directory / "processed_wordinfo.tsv"
+    stimuli = load_stimuli(tok_path)
+    info = normalize_words(read_table(info_path), "Natural Stories wordinfo")
+    validate_word_matches(stimuli, info, "Natural Stories")
+    if not {"meanItemRT", "nItem"}.issubset(info):
+        raise ValueError("Natural Stories requires meanItemRT and nItem")
+    info = info.rename(columns={"meanItemRT": "primary_RT", "nItem": "n_participants",
+                                "sdItemRT": "sdRT", "gmeanItemRT": "gRT", "gsdItemRT": "gsdRT"})
+    for col in ["primary_RT", "n_participants", "sdRT", "gRT", "gsdRT"]:
+        if col in info:
+            info[col] = numeric(info[col], col)
+    bad = info["primary_RT"].notna() & (info["primary_RT"].le(0) | info["n_participants"].isna()
+                                       | info["n_participants"].le(0))
+    if bad.any():
+        raise ValueError("Natural Stories contains invalid aggregate RT/counts; check source release")
+    counts = info["n_participants"].dropna()
+    if (counts < 0).any() or (counts % 1 != 0).any():
+        raise ValueError("Natural Stories nItem must contain nonnegative integer counts")
+    prepared = stimuli.merge(info.drop(columns="word"), on=KEYS, how="left", validate="one_to_one")
+    prepared["RT"] = prepared["primary_RT"]
+    prepared["rt_measure"] = "SPR"
+    prepared["rt_source_column"] = "meanItemRT"
+    inputs = {"stimuli": file_record(tok_path), "wordinfo": file_record(info_path)}
+    available = [p for p in [directory / "processed_RTs.tsv", directory / "processed_RT.tsv"] if p.exists()]
+    if len(available) > 1:
+        raise ValueError("Both processed_RT.tsv and processed_RTs.tsv exist; keep one authoritative file")
+    trials = None
+    if available:
+        trials = normalize_words(read_table(available[0]), "Natural Stories participant RTs", unique=False)
+        validate_word_matches(stimuli, trials, "Natural Stories participants")
+        if not {"WorkerId", "RT"}.issubset(trials):
+            raise ValueError("Participant file must contain WorkerId and RT")
+        trials["participant_id"] = trials["WorkerId"].astype(str)
+        if trials["participant_id"].str.strip().eq("").any() or trials.duplicated(["participant_id"] + KEYS).any():
+            raise ValueError("Missing or duplicate Natural Stories participant x word IDs")
+        trials["raw_RT"] = numeric(trials["RT"], "participant RT")
+        trials["rt_measure"] = "SPR"
+        inputs["participant_rt"] = file_record(available[0])
+    return prepared, trials, inputs, {
+        "measure": "SPR", "source_column": "meanItemRT",
+        "aggregation": "Upstream meanItemRT retained; participant file not reaggregated",
+        "participant_data_available": trials is not None,
+        "source_note": "Use the corrected post-2021 Natural Stories release; hashes identify local inputs",
+    }
 
-def print_summary(df: pd.DataFrame, corpus_name: str):
-    print(f"  {corpus_name.upper()} — Summary")
-    print(f"  Rows (word observations): {len(df):,}")
-    print(f"  Unique texts/stories:     {df['text_id'].nunique()}")
-    print(f"  Unique words (types):     {df['word_clean'].nunique():,}")
-    print(f"  Mean RT (ms):             {df['primary_RT'].mean():.1f}")
-    print(f"  Median RT (ms):           {df['primary_RT'].median():.1f}")
-    print(f"  Mean Zipf frequency:      {df['zipf_freq'].mean():.2f}")
-    print(f"  Multi-token words:        {(df['n_tokens'] > 1).sum():,} ({100*(df['n_tokens'] > 1).mean():.1f}%)")
-    print(f"  Missing RT:               {df['primary_RT'].isna().sum()}")
-    if "row_uid" in df.columns:
-        print(f"  Unique row ids:           {df['row_uid'].is_unique}")
 
-def main():
-    parser = argparse.ArgumentParser(description="SparseRT — Step 01: Data Preparation")
-    parser.add_argument(
-        "--corpus",
-        choices=["provo", "natural_stories", "both"],
-        default="both"
-    )
-    args = parser.parse_args()
+def add_predictors_and_alignment(prepared, corpus, tokenizer, frequency_fn=None):
+    if frequency_fn is None:
+        from wordfreq import zipf_frequency
+        frequency_fn = lambda w: zipf_frequency(w, "en", wordlist="large")
+    df = normalize_words(prepared, corpus, complete=True)
+    df["word_clean"] = df["word"].map(clean_word)
+    df["zipf_freq"] = df["word_clean"].map(frequency_fn)
+    df["word_length"] = df["word_clean"].str.len()
+    df["is_sentence_final"] = df["word"].str.contains(r'''[.!?]["'”’)]*$''', regex=True).astype(int)
+    df["corpus"] = corpus
+    df["row_uid"] = corpus + ":" + df["text_id"].astype(str) + ":" + df["word_position"].astype(str)
+    df["log_primary_RT"] = np.log(df["primary_RT"].where(df["primary_RT"].gt(0)))
+    df["rt_aggregation"] = "log_of_arithmetic_mean_ms"
+    records = []
+    for _, group in df.groupby("text_id", sort=True):
+        _, ids, _, spans = tokenize_words(group["word"].tolist(), tokenizer)
+        for uid, (start, end) in zip(group["row_uid"], spans):
+            records.append({"row_uid": uid, "start_token_idx": start, "end_token_idx": end,
+                            "n_tokens": end - start + 1, "token_ids_str": json.dumps(ids[start:end+1])})
+    return df.merge(pd.DataFrame(records), on="row_uid", validate="one_to_one", how="left")
 
-    if args.corpus in ("provo", "both"):
-        try:
-            provo = load_provo()
-            print_summary(provo, "provo")
-            out_path = PROVO_DIR / "provo_prepared.csv"
-            provo.to_csv(out_path, index=False)
-            print(f"  Saved → {out_path}\n")
-        except FileNotFoundError as e:
-            print(f"\n[SKIP] {e}\n")
 
-    if args.corpus in ("natural_stories", "both"):
-        try:
-            ns = load_natural_stories()
-            print_summary(ns, "natural_stories")
-            out_path = NS_DIR / "natural_stories_prepared.csv"
-            ns.to_csv(out_path, index=False)
-            print(f"  Saved → {out_path}\n")
-        except FileNotFoundError as e:
-            print(f"\n[SKIP] {e}\n")
+def save_prepared(df, trials, corpus, output, inputs, settings, tokenizer, revision, overwrite=False):
+    output = Path(output)
+    names = [f"{corpus}_prepared.csv", "story_token_order.csv", f"{corpus}_prepared_manifest.json"]
+    participant_name = f"{corpus}_participants.csv"
+    if trials is None and (output / participant_name).exists():
+        raise ValueError("Existing participant output but no participant input; use a fresh output directory")
+    if trials is not None:
+        names.append(participant_name)
+    if not overwrite and any((output / name).exists() for name in names):
+        raise FileExistsError(f"Prepared output exists in {output}; use a fresh --output-dir or --overwrite")
+    output.mkdir(parents=True, exist_ok=True)
+    run_id = str(uuid.uuid4())
+    df = df.copy()
+    df["preparation_id"] = run_id
+    with tempfile.TemporaryDirectory(prefix=".prepare-", dir=output) as temp:
+        temp = Path(temp)
+        df.to_csv(temp / names[0], index=False)
+        df[KEYS + ["word", "row_uid"]].to_csv(temp / names[1], index=False)
+        if trials is not None:
+            trials.to_csv(temp / participant_name, index=False)
+        outputs = {p.name: {"sha256": file_record(p)["sha256"]} for p in temp.iterdir()}
+        manifest = {**run_metadata(), "schema_version": 2, "preparation_id": run_id,
+                    "corpus": corpus, "inputs": inputs, "outputs": outputs, "settings": settings,
+                    "source_code": [file_record(__file__), file_record(Path(__file__).with_name("pipeline_utils.py"))],
+                    "tokenizer": {"name": "gpt2", "requested_revision": revision,
+                                  "backend_sha256": tokenizer_hash(tokenizer)},
+                    "text_reconstruction": "Corpus words joined by one ASCII space; case/punctuation preserved",
+                    "n_words": len(df), "n_texts": int(df["text_id"].nunique()),
+                    "n_missing_rt": int(df["primary_RT"].isna().sum())}
+        write_json(temp / names[2], manifest)
+        for name in names:
+            if name != names[2]:
+                (temp / name).replace(output / name)
+        (temp / names[2]).replace(output / names[2])
+    print(f"{corpus}: {len(df):,} stimulus words, {df['primary_RT'].notna().sum():,} RT means -> {output}")
 
-    print("Data preparation complete.")
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--corpus", choices=["provo", "natural_stories", "both"], default="both")
+    parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
+    parser.add_argument("--output-dir", type=Path, help="Prepared-data root; one subdirectory per corpus")
+    parser.add_argument("--provo-stimuli", type=Path, help="Optional complete stimulus table keyed by IA_ID; default derives regions from official IA_ID/IA_LABEL")
+    parser.add_argument("--provo-rt", choices=list(RT_COLUMNS), help="Required for Provo; no automatic fallback")
+    parser.add_argument("--provo-rt-column", help="Explicit override after consulting the data dictionary")
+    parser.add_argument("--provo-participant-column", help="Default: Participant_ID, with Part_ID fallback for legacy input")
+    parser.add_argument("--provo-rt-min", type=float)
+    parser.add_argument("--provo-rt-max", type=float)
+    parser.add_argument("--tokenizer-revision", default="main", help="Use a commit SHA for reproducibility")
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args(argv)
+    corpora = ["provo", "natural_stories"] if args.corpus == "both" else [args.corpus]
+    if "provo" in corpora and args.provo_rt is None:
+        parser.error("Provo requires --provo-rt (FFD, GZD, or TRT)")
+    bounds = [x for x in [args.provo_rt_min, args.provo_rt_max] if x is not None]
+    if any(not np.isfinite(x) or x <= 0 for x in bounds) or (len(bounds) == 2 and bounds[0] > bounds[1]):
+        parser.error("RT bounds must be positive, finite, and min <= max")
+    loaded = {}
+    for corpus in corpora:
+        if corpus == "provo":
+            loaded[corpus] = prepare_provo(args.provo_stimuli,
+                args.data_dir / "provo" / "Provo_Corpus-Eyetracking_Data.csv", args.provo_rt,
+                args.provo_rt_column, args.provo_participant_column, args.provo_rt_min, args.provo_rt_max)
+        else:
+            loaded[corpus] = prepare_natural_stories(args.data_dir / corpus)
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("gpt2", revision=args.tokenizer_revision, use_fast=True)
+    if not tokenizer.is_fast:
+        raise ValueError("A fast tokenizer with offsets is required")
+    for corpus in corpora:
+        df, trials, inputs, settings = loaded[corpus]
+        df = add_predictors_and_alignment(df, corpus, tokenizer)
+        save_prepared(df, trials, corpus, (args.output_dir or args.data_dir) / corpus,
+                      inputs, settings, tokenizer, args.tokenizer_revision, args.overwrite)
+
 
 if __name__ == "__main__":
     main()

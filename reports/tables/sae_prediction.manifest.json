@@ -1,0 +1,46 @@
+{
+  "inputs": [
+    {
+      "path": "reports/sae_prediction/primary_results.csv",
+      "sha256": "4c278ed996ba5352cbbff66ef46a52e8adf8f862f422cf0cff0aa57995a1ba05",
+      "bytes": 620
+    }
+  ],
+  "source_code": {
+    "path": "src/table_export.py",
+    "sha256": "87eb4be01323bbd9b30b406d45713e0bf70d13e28ec46190fa22827819712ed1",
+    "bytes": 8439
+  },
+  "caption": "SAE gains beyond lexical controls and matched-context surprisal.",
+  "label": "tab:sae-prediction",
+  "columns": [
+    "Corpus",
+    "State",
+    "SAE gain (pp)",
+    "SAE 95% interval"
+  ],
+  "rename": {},
+  "decimals": {
+    "SAE gain (pp)": 2
+  },
+  "signed": [
+    "SAE gain (pp)"
+  ],
+  "emphasize": [
+    "SAE gain (pp)"
+  ],
+  "notes": "Gains in R2 percentage points. Intervals resample texts conditional on saved predictions, excluding participant and refitting uncertainty.",
+  "wide": true,
+  "outputs": {
+    "sae_prediction.tex": {
+      "path": "reports/tables/sae_prediction.tex",
+      "sha256": "cd2cdd9ac755a6685508d6c1016c6f3663fc01d00bb3f662637fc199a23a4ea1",
+      "bytes": 738
+    },
+    "sae_prediction.csv": {
+      "path": "reports/tables/sae_prediction.csv",
+      "sha256": "559ad772b0729f3cef4cf89215027a53bbaaec0763f031e25651c140e375fb59",
+      "bytes": 303
+    }
+  }
+}

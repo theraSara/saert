@@ -1,0 +1,5 @@
+corpus,model,texts,texts_with_lower_MSE,min_MSE_reduction,max_MSE_reduction
+provo,long_spillover,55,40,-0.000935270341126,0.0009741434054294
+provo,matched_spillover,55,40,-0.000935270341126,0.0009741434054294
+natural_stories,long_spillover,10,9,-0.0002452208131966,0.0012149387302786
+natural_stories,matched_spillover,10,9,-0.0004318720799295,0.0012479753621596

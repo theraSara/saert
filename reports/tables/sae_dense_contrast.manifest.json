@@ -1,0 +1,46 @@
+{
+  "inputs": [
+    {
+      "path": "reports/sae_prediction/primary_results.csv",
+      "sha256": "4c278ed996ba5352cbbff66ef46a52e8adf8f862f422cf0cff0aa57995a1ba05",
+      "bytes": 620
+    }
+  ],
+  "source_code": {
+    "path": "src/table_export.py",
+    "sha256": "87eb4be01323bbd9b30b406d45713e0bf70d13e28ec46190fa22827819712ed1",
+    "bytes": 8439
+  },
+  "caption": "Paired SAE-versus-dense comparison. Positive values favor SAE.",
+  "label": "tab:sae-dense-contrast",
+  "columns": [
+    "Corpus",
+    "State",
+    "SAE minus dense (pp)",
+    "Difference 95% interval"
+  ],
+  "rename": {},
+  "decimals": {
+    "SAE minus dense (pp)": 2
+  },
+  "signed": [
+    "SAE minus dense (pp)"
+  ],
+  "emphasize": [
+    "SAE minus dense (pp)"
+  ],
+  "notes": "Gains in R2 percentage points. Intervals resample texts conditional on saved predictions, excluding participant and refitting uncertainty.",
+  "wide": true,
+  "outputs": {
+    "sae_dense_contrast.tex": {
+      "path": "reports/tables/sae_dense_contrast.tex",
+      "sha256": "e7512a25d1d296db2ae68bb9e70dbbc86ae8bb31da65fbdeec474ed45846836c",
+      "bytes": 754
+    },
+    "sae_dense_contrast.csv": {
+      "path": "reports/tables/sae_dense_contrast.csv",
+      "sha256": "22898504b156f3604b590ee4721610802a3a4fae974e6ad7e39742ab10eff400",
+      "bytes": 319
+    }
+  }
+}

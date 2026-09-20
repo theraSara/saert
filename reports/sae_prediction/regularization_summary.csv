@@ -1,0 +1,9 @@
+corpus,kind,representation,fits,smallest_alpha_choices,largest_alpha_choices
+natural_stories,post,dense,130,0,0
+natural_stories,post,sae,130,0,17
+natural_stories,prefix,dense,130,0,1
+natural_stories,prefix,sae,130,0,53
+provo,post,dense,715,0,0
+provo,post,sae,715,0,246
+provo,prefix,dense,715,0,4
+provo,prefix,sae,715,0,419

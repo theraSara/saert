@@ -1,0 +1,18 @@
+\begin{table*}[t]
+\caption{Exploratory fixed-L01 sensitivity using a training-derived scale floor.}
+\label{tab:scaling-sensitivity}
+\begin{tabular}{lllll}
+\toprule
+corpus & state & floor\_gain\_pp & floor\_ci\_low\_pp & floor\_ci\_high\_pp \\
+\midrule
+provo & prefix & \textbf{+3.41} & 2.53 & 4.33 \\
+provo & post & \textbf{+6.53} & 5.28 & 7.82 \\
+natural\_stories & prefix & \textbf{+0.62} & 0.20 & 0.95 \\
+natural\_stories & post & \textbf{+2.13} & 1.47 & 2.81 \\
+\bottomrule
+\end{tabular}
+\par\smallskip
+\begin{minipage}{\linewidth}\footnotesize
+Gains in R2 percentage points. Intervals resample texts conditional on saved predictions, excluding participant and refitting uncertainty.
+\end{minipage}
+\end{table*}

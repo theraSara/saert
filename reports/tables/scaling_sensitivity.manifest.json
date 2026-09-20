@@ -1,0 +1,49 @@
+{
+  "inputs": [
+    {
+      "path": "reports/scaling_sensitivity/comparison.csv",
+      "sha256": "0ddfe34c0c63e7c0ce9eaf337656fbc3feaf83345d2edec3dc803815c486cd77",
+      "bytes": 805
+    }
+  ],
+  "source_code": {
+    "path": "src/table_export.py",
+    "sha256": "87eb4be01323bbd9b30b406d45713e0bf70d13e28ec46190fa22827819712ed1",
+    "bytes": 8439
+  },
+  "caption": "Exploratory fixed-L01 sensitivity using a training-derived scale floor.",
+  "label": "tab:scaling-sensitivity",
+  "columns": [
+    "corpus",
+    "state",
+    "floor_gain_pp",
+    "floor_ci_low_pp",
+    "floor_ci_high_pp"
+  ],
+  "rename": {},
+  "decimals": {
+    "floor_gain_pp": 2,
+    "floor_ci_low_pp": 2,
+    "floor_ci_high_pp": 2
+  },
+  "signed": [
+    "floor_gain_pp"
+  ],
+  "emphasize": [
+    "floor_gain_pp"
+  ],
+  "notes": "Gains in R2 percentage points. Intervals resample texts conditional on saved predictions, excluding participant and refitting uncertainty.",
+  "wide": true,
+  "outputs": {
+    "scaling_sensitivity.tex": {
+      "path": "reports/tables/scaling_sensitivity.tex",
+      "sha256": "a798e3e63e9521f4981539b1bd39b711cb02016dbeda90675719adb6169f6c39",
+      "bytes": 716
+    },
+    "scaling_sensitivity.csv": {
+      "path": "reports/tables/scaling_sensitivity.csv",
+      "sha256": "087958d5cead0a2ec1bfc8a51ad4f7ea3c720e9a45e7fc8b8a8b0c235b7f7d94",
+      "bytes": 346
+    }
+  }
+}

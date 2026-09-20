@@ -1,0 +1,5 @@
+# Keep executable source portable across macOS/Linux and Git Bash.
+*.sh text eol=lf
+*.py text eol=lf
+# Preserve exact bytes used by the report and table checksum manifests.
+/reports/** -text

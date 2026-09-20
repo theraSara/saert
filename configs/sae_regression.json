@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "analysis": "exploratory nested story-held-out ridge regression",
+  "context": "matched",
+  "spillover_lags": 2,
+  "inner_splits": 3,
+  "alphas": [100.0, 10.0, 1.0, 0.1, 0.01],
+  "min_active_training_rows": 5,
+  "variance_floor": 1e-12,
+  "cg_rtol": 1e-6,
+  "cg_maxiter": 1500,
+  "bootstrap": 2000,
+  "seed": 42,
+  "threads": 4,
+  "objective": "mean squared error plus alpha times squared standardized-feature coefficients; baseline controls and surprisal unpenalized",
+  "selection": "alpha by pooled inner-validation MSE; ties favor larger alpha; per-hook outer predictions; best-hook selection uses inner errors only",
+  "readouts": ["dense", "sae"],
+  "states": ["prefix", "post"],
+  "scope": "ridge first; elastic-net feature selection and interventions are later analyses"
+}

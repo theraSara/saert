@@ -1,453 +1,268 @@
+"""Nested text-held-out ridge: unpenalized baseline plus dense or sparse features."""
 import argparse
-import pickle
-import warnings
+import json
 from pathlib import Path
-
+import tempfile
+import time
 import numpy as np
 import pandas as pd
-from scipy.stats import pearsonr
-from sklearn.linear_model import Lasso, LinearRegression
-from sklearn.metrics import r2_score
-from sklearn.model_selection import GridSearchCV, GroupKFold, KFold
-from sklearn.pipeline import make_pipeline
+from scipy import sparse
+from scipy.sparse.linalg import LinearOperator, cg
+from sklearn.model_selection import GroupKFold, LeaveOneGroupOut
 from sklearn.preprocessing import StandardScaler
+from threadpoolctl import threadpool_limits
 
-warnings.filterwarnings("ignore")
+try:
+    from .baseline import build_design, OUTCOME
+    from .pipeline_utils import file_record, read_table, sha256_file, write_json, run_metadata
+    from .surprisal import HOOK_FILES
+    from .validate_outputs import validate_corpus
+except ImportError:
+    from baseline import build_design, OUTCOME
+    from pipeline_utils import file_record, read_table, sha256_file, write_json, run_metadata
+    from surprisal import HOOK_FILES
+    from validate_outputs import validate_corpus
 
 ROOT = Path(__file__).resolve().parent.parent
-SAE_DIR = ROOT / "results" / "sae"
-REG_DIR = ROOT / "results" / "regression"
-
-N_LAYERS = 12
-N_CV_FOLDS = 5
-RANDOM_STATE = 42
-ALPHAS = np.logspace(-4, 1, 40)
-CONTROLS = ["zipf_freq", "word_length", "is_sentence_final"]
-RT_COL = "log_primary_RT"
 
 
-def make_row_uid(corpus: str, df: pd.DataFrame) -> pd.Series:
-    return (
-        corpus + ":" + df["text_id"].astype(str)
-        + ":" + df["word_position"].astype(int).astype(str)
-    )
-
-
-def get_cv_splitter(groups: np.ndarray, n_splits: int = N_CV_FOLDS):
-    if groups is None:
-        return KFold(
-            n_splits=n_splits,
-            shuffle=True,
-            random_state=RANDOM_STATE,
-        ), None
-    unique_groups = np.unique(groups)
-    if len(unique_groups) >= 2:
-        return GroupKFold(n_splits=min(n_splits, len(unique_groups))), groups
-    return KFold(
-        n_splits=min(n_splits, len(groups)),
-        shuffle=True,
-        random_state=RANDOM_STATE,
-    ), None
-
-
-def load_corpus_data(corpus: str) -> tuple[pd.DataFrame, dict]:
-    rt_path = REG_DIR / f"{corpus}_residualized_RT.csv"
-    if not rt_path.exists():
-        raise FileNotFoundError(
-            f"Residualized RT not found at {rt_path}\n"
-            "Run src/baseline.py first."
-        )
-
-    model_path = REG_DIR / f"{corpus}_baseline_model.pkl"
-    with open(model_path, "rb") as f:
-        baseline = pickle.load(f)
-
-    df = pd.read_csv(rt_path)
-    if "row_uid" not in df.columns:
-        df["row_uid"] = make_row_uid(corpus, df)
-
-    required = [RT_COL, "surprisal", "row_uid", "text_id"] + CONTROLS
-    df = df.dropna(subset=required).reset_index(drop=True)
-
-    print(f"  Loaded {len(df):,} words for {corpus}")
-    if "heldout" in baseline:
-        heldout = baseline["heldout"]
-        print(f"  Held-out R2 controls:           {heldout['r2_controls']:.4f}")
-        print(f"  Held-out R2 controls+surprisal: {heldout['r2_controls_surprisal']:.4f}")
-        print(f"  Held-out delta surprisal:       {heldout['delta_r2_surprisal']:.4f}")
-
-    return df, baseline
-
-
-def load_sae_features(corpus: str, layer: int, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    stats_path = SAE_DIR / f"{corpus}_sae_L{layer:02d}_stats.npz"
-    if not stats_path.exists():
-        raise FileNotFoundError(
-            f"SAE stats not found at {stats_path}\n"
-            "Run src/sae_extraction.py first."
-        )
-
-    data = np.load(stats_path, allow_pickle=True)
-    dense_topk = data["dense_topk"]
-    top_k_ids = data["top_k_ids"]
-
-    if dense_topk.shape[0] != len(df):
-        raise ValueError(
-            f"{corpus} layer {layer}: SAE matrix has {dense_topk.shape[0]} rows "
-            f"but regression data has {len(df)} rows. Regenerate upstream artifacts."
-        )
-
-    if "row_uid" in data:
-        sae_uids = data["row_uid"].astype(str)
-        df_uids = df["row_uid"].astype(str).to_numpy()
-        if not np.array_equal(sae_uids, df_uids):
-            mismatches = np.where(sae_uids != df_uids)[0][:5]
-            examples = [
-                f"{i}: sae={sae_uids[i]} df={df_uids[i]}"
-                for i in mismatches
-            ]
-            raise ValueError(
-                f"{corpus} layer {layer}: row_uid mismatch between SAE and RT data. "
-                + "; ".join(examples)
-            )
-
-    return dense_topk, top_k_ids
-
-
-def residualize_against_controls(
-    X_train: np.ndarray,
-    X_test: np.ndarray,
-    C_train: np.ndarray,
-    C_test: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    if X_train.shape[1] == 0:
-        return X_train, X_test
-    model = make_pipeline(StandardScaler(), LinearRegression())
-    model.fit(C_train, X_train)
-    return X_train - model.predict(C_train), X_test - model.predict(C_test)
-
-
-def fit_incremental_model(
-    C_train: np.ndarray,
-    C_test: np.ndarray,
-    X_train: np.ndarray,
-    X_test: np.ndarray,
-    y_train: np.ndarray,
-    groups_train: np.ndarray | None,
-    use_lasso: bool,
-) -> tuple[np.ndarray, np.ndarray, float]:
-    control_model = make_pipeline(StandardScaler(), LinearRegression())
-    control_model.fit(C_train, y_train)
-    control_pred_train = control_model.predict(C_train)
-    control_pred_test = control_model.predict(C_test)
-
-    if X_train.shape[1] == 0:
-        return control_pred_test, np.array([]), np.nan
-
-    y_resid_train = y_train - control_pred_train
-    X_resid_train, X_resid_test = residualize_against_controls(
-        X_train, X_test, C_train, C_test
-    )
-
-    if use_lasso:
-        inner_cv, inner_groups = get_cv_splitter(groups_train)
-        model = GridSearchCV(
-            make_pipeline(
-                StandardScaler(),
-                Lasso(max_iter=10000, random_state=RANDOM_STATE),
-            ),
-            param_grid={"lasso__alpha": ALPHAS},
-            cv=inner_cv,
-            scoring="r2",
-        )
-        model.fit(X_resid_train, y_resid_train, groups=inner_groups)
-        resid_pred = model.predict(X_resid_test)
-        coef = model.best_estimator_.named_steps["lasso"].coef_
-        alpha = float(model.best_params_["lasso__alpha"])
+def prepare_fit(controls, y, features, config):
+    """All nuisance projection, feature filtering and scales use this training split."""
+    scaler = StandardScaler().fit(controls)
+    c = np.column_stack([np.ones(len(y)), scaler.transform(controls)])
+    u, s, _ = np.linalg.svd(c, full_matrices=False)
+    q = u[:, s > s[0] * max(c.shape) * np.finfo(float).eps]
+    pinv = np.linalg.pinv(c)
+    base_coef = pinv @ y
+    x = features.astype(np.float64)
+    if sparse.issparse(x):
+        means = np.asarray(x.mean(axis=0)).ravel()
+        var = np.asarray(x.power(2).mean(axis=0)).ravel() - means**2
+        counts = x.getnnz(axis=0)
     else:
-        model = make_pipeline(StandardScaler(), LinearRegression())
-        model.fit(X_resid_train, y_resid_train)
-        resid_pred = model.predict(X_resid_test)
-        coef = model.named_steps["linearregression"].coef_
-        alpha = np.nan
-
-    return control_pred_test + resid_pred, np.asarray(coef), alpha
-
-
-def fit_final_coefficients(
-    C: np.ndarray,
-    X: np.ndarray,
-    y: np.ndarray,
-    groups: np.ndarray,
-) -> tuple[np.ndarray, float]:
-    _, coef, alpha = fit_incremental_model(
-        C, C, X, X, y, groups, use_lasso=True
-    )
-    return coef, alpha
+        var = np.var(x, axis=0)
+        counts = np.count_nonzero(x, axis=0)
+    keep = (var > config["variance_floor"]) & (counts >= config["min_active_training_rows"])
+    scale = np.sqrt(np.maximum(var[keep], config["variance_floor"]))
+    z = x[:, keep]
+    z = z.multiply(1/scale).tocsr() if sparse.issparse(z) else z / scale
+    qz = np.asarray((z.T @ q).T)
+    residual = y - q @ (q.T @ y)
+    rhs = np.asarray(z.T @ residual).ravel() / len(y)
+    prepared = dict(c=c, q=q, pinv=pinv, scaler=scaler, z=z, qz=qz, y=y,
+                    rhs=rhs, keep=keep, scale=scale, base_coef=base_coef, n=len(y))
+    if not sparse.issparse(z) and z.shape[1]:
+        gram = (z.T @ z - qz.T @ qz) / len(y)
+        eigenvalues, vectors = np.linalg.eigh((gram + gram.T)/2)
+        prepared.update(eigenvalues=np.maximum(eigenvalues, 0), vectors=vectors)
+    return prepared
 
 
-def grouped_bootstrap_metrics(
-    y: np.ndarray,
-    predictions: dict[str, np.ndarray],
-    groups: np.ndarray,
-    n_boot: int = 1000,
-) -> dict:
-    rng = np.random.default_rng(RANDOM_STATE)
-    unique_groups = np.unique(groups)
-    group_to_idx = {g: np.where(groups == g)[0] for g in unique_groups}
-    rows = []
-    for _ in range(n_boot):
-        sampled_groups = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        idx = np.concatenate([group_to_idx[g] for g in sampled_groups])
-        if np.var(y[idx]) == 0:
-            continue
-        row = {name: r2_score(y[idx], pred[idx]) for name, pred in predictions.items()}
-        row["delta_surprisal"] = row["controls_surprisal"] - row["controls"]
-        row["delta_sae_over_surprisal"] = row["combined"] - row["controls_surprisal"]
-        row["delta_sae_over_controls"] = row["controls_sae"] - row["controls"]
-        rows.append(row)
-    boot = pd.DataFrame(rows)
-    out = {}
-    for col in boot.columns:
-        out[f"{col}_ci_low"] = boot[col].quantile(0.025)
-        out[f"{col}_ci_high"] = boot[col].quantile(0.975)
-    return out
-
-
-def analyse_layer(corpus: str, layer: int, df: pd.DataFrame) -> tuple[dict, list[dict], pd.DataFrame] | None:
-    y = df[RT_COL].to_numpy(dtype=float)
-    C = df[CONTROLS].to_numpy(dtype=float)
-    surp = df[["surprisal"]].to_numpy(dtype=float)
-    groups = df["text_id"].to_numpy()
-
-    try:
-        feat_matrix, top_k_ids = load_sae_features(corpus, layer, df)
-    except FileNotFoundError as e:
-        print(f"    [SKIP] {e}")
-        return None
-
-    col_var = feat_matrix.var(axis=0)
-    nonzero = col_var > 0
-    feat_use = feat_matrix[:, nonzero]
-    ids_use = top_k_ids[nonzero]
-
-    splitter, split_groups = get_cv_splitter(groups)
-    split_args = (C, y, split_groups) if split_groups is not None else (C, y)
-
-    preds = {
-        "controls": np.full(len(df), np.nan),
-        "controls_surprisal": np.full(len(df), np.nan),
-        "controls_sae": np.full(len(df), np.nan),
-        "combined": np.full(len(df), np.nan),
-    }
-    fold_rows = []
-    fold_feature_rows = []
-    alpha_sae = []
-    alpha_combined = []
-
-    for fold, (train_idx, test_idx) in enumerate(splitter.split(*split_args), start=1):
-        C_train, C_test = C[train_idx], C[test_idx]
-        y_train, y_test = y[train_idx], y[test_idx]
-        groups_train = groups[train_idx] if split_groups is not None else None
-
-        controls_pred, _, _ = fit_incremental_model(
-            C_train, C_test,
-            np.empty((len(train_idx), 0)), np.empty((len(test_idx), 0)),
-            y_train, groups_train, use_lasso=False
-        )
-        surp_pred, _, _ = fit_incremental_model(
-            C_train, C_test, surp[train_idx], surp[test_idx],
-            y_train, groups_train, use_lasso=False
-        )
-        sae_pred, _, sae_alpha = fit_incremental_model(
-            C_train, C_test, feat_use[train_idx], feat_use[test_idx],
-            y_train, groups_train, use_lasso=True
-        )
-        combined_X = np.column_stack([surp, feat_use])
-        combined_pred, combined_coef, combined_alpha = fit_incremental_model(
-            C_train, C_test, combined_X[train_idx], combined_X[test_idx],
-            y_train, groups_train, use_lasso=True
-        )
-
-        preds["controls"][test_idx] = controls_pred
-        preds["controls_surprisal"][test_idx] = surp_pred
-        preds["controls_sae"][test_idx] = sae_pred
-        preds["combined"][test_idx] = combined_pred
-        alpha_sae.append(sae_alpha)
-        alpha_combined.append(combined_alpha)
-
-        feature_coefs = combined_coef[1:] if len(combined_coef) else np.array([])
-        selected = np.where(feature_coefs != 0)[0]
-        for j in selected:
-            fold_feature_rows.append({
-                "fold": fold,
-                "layer": layer,
-                "feature_id": int(ids_use[j]),
-                "coef": float(feature_coefs[j]),
-            })
-
-        fold_rows.append({
-            "corpus": corpus,
-            "layer": layer,
-            "fold": fold,
-            "n_train": len(train_idx),
-            "n_test": len(test_idx),
-            "r2_controls": r2_score(y_test, controls_pred),
-            "r2_controls_surprisal": r2_score(y_test, surp_pred),
-            "r2_controls_sae": r2_score(y_test, sae_pred),
-            "r2_combined": r2_score(y_test, combined_pred),
-        })
-
-    r2_controls = r2_score(y, preds["controls"])
-    r2_surp = r2_score(y, preds["controls_surprisal"])
-    r2_sae = r2_score(y, preds["controls_sae"])
-    r2_combined = r2_score(y, preds["combined"])
-    ci = grouped_bootstrap_metrics(y, preds, groups)
-
-    n_active_per_word = (feat_use > 0).sum(axis=1)
-    r_l0, p_l0 = pearsonr(n_active_per_word, y)
-
-    final_combined_X = np.column_stack([surp, feat_use])
-    final_coef, final_alpha = fit_final_coefficients(C, final_combined_X, y, groups)
-    final_feature_coef = final_coef[1:] if len(final_coef) else np.array([])
-
-    fold_features = pd.DataFrame(fold_feature_rows)
-    n_outer_folds = len(fold_rows)
-    top_features = []
-    for j, coef in enumerate(final_feature_coef):
-        if coef == 0:
-            continue
-        feature_id = int(ids_use[j])
-        if fold_features.empty:
-            selected_coefs = pd.Series(dtype=float)
+def ridge_path(fit, test_controls, test_features, alphas, config, keep_coefficients=False):
+    c_test = np.column_stack([np.ones(len(test_controls)), fit["scaler"].transform(test_controls)])
+    raw_test = test_features[:, fit["keep"]]
+    z_test = raw_test.multiply(1/fit["scale"]).tocsr() if sparse.issparse(raw_test) else raw_test/fit["scale"]
+    predictions, coefficients, iterations = [], [], []
+    z, qz, n = fit["z"], fit["qz"], fit["n"]
+    p = z.shape[1]
+    previous = np.zeros(p)
+    if sparse.issparse(z):
+        diag = np.maximum((np.asarray(z.power(2).sum(axis=0)).ravel() - (qz*qz).sum(axis=0))/n, 0)
+    for alpha in alphas:
+        count = [0]
+        if p == 0:
+            beta = np.zeros(0)
+        elif "vectors" in fit:
+            v = fit["vectors"]
+            beta = v @ ((v.T @ fit["rhs"])/(fit["eigenvalues"] + alpha))
         else:
-            selected_coefs = fold_features.loc[
-                fold_features["feature_id"] == feature_id, "coef"
-            ]
-        signs = np.sign(selected_coefs.to_numpy())
-        final_sign = np.sign(coef)
-        sign_agreement = float((signs == final_sign).mean()) if len(signs) else 0.0
-        top_features.append({
-            "corpus": corpus,
-            "layer": layer,
-            "feature_id": feature_id,
-            "coef": float(coef),
-            "direction": "positive" if coef > 0 else "negative",
-            "mean_act": float(feat_use[:, j].mean()),
-            "pct_active": float((feat_use[:, j] > 0).mean() * 100),
-            "selection_rate": float(len(selected_coefs) / n_outer_folds),
-            "mean_cv_coef": float(selected_coefs.mean()) if len(selected_coefs) else 0.0,
-            "sign_agreement": sign_agreement,
-        })
-    top_features = sorted(top_features, key=lambda x: abs(x["coef"]), reverse=True)
-
-    result = {
-        "corpus": corpus,
-        "layer": layer,
-        "n_words": len(df),
-        "n_sae_features_available": int(feat_use.shape[1]),
-        "n_sae_features_selected_final": len(top_features),
-        "n_sae_features_selected_stable_60pct": int(sum(f["selection_rate"] >= 0.6 for f in top_features)),
-        "heldout_r2_controls": r2_controls,
-        "heldout_r2_controls_surprisal": r2_surp,
-        "heldout_r2_controls_sae": r2_sae,
-        "heldout_r2_combined": r2_combined,
-        "heldout_delta_r2_surprisal": r2_surp - r2_controls,
-        "heldout_delta_r2_sae_over_surprisal": r2_combined - r2_surp,
-        "heldout_delta_r2_sae_over_controls": r2_sae - r2_controls,
-        "lasso_alpha_sae_mean": float(np.nanmean(alpha_sae)),
-        "lasso_alpha_combined_mean": float(np.nanmean(alpha_combined)),
-        "lasso_alpha_combined_final": final_alpha,
-        "r_l0_rt": r_l0,
-        "p_l0_rt": p_l0,
-        **ci,
-    }
-
-    print(
-        f"    Layer {layer:2d} | "
-        f"R2 ctrl={r2_controls:.4f} | "
-        f"ctrl+surp={r2_surp:.4f} | "
-        f"ctrl+SAE={r2_sae:.4f} | "
-        f"combined={r2_combined:.4f} | "
-        f"delta SAE|surp={result['heldout_delta_r2_sae_over_surprisal']:.4f} | "
-        f"stable feats={result['n_sae_features_selected_stable_60pct']}"
-    )
-
-    return result, top_features, pd.DataFrame(fold_rows)
+            operator = LinearOperator((p, p), matvec=lambda b: (z.T @ (z @ b)-qz.T @ (qz @ b))/n + alpha*b, dtype=np.float64)
+            preconditioner = LinearOperator((p, p), matvec=lambda b: b/(diag+alpha), dtype=np.float64)
+            def callback(_):
+                count[0] += 1
+            beta, info = cg(operator, fit["rhs"], x0=previous, M=preconditioner,
+                            rtol=config["cg_rtol"], atol=0, maxiter=config["cg_maxiter"], callback=callback)
+            if info != 0:
+                raise RuntimeError(f"Ridge CG did not converge: alpha={alpha}, info={info}; no silent fallback")
+        previous = beta
+        base_coef = fit["pinv"] @ (fit["y"] - z @ beta)
+        pred = c_test @ base_coef + z_test @ beta
+        if not np.isfinite(pred).all():
+            raise ValueError("Nonfinite ridge prediction")
+        predictions.append(pred)
+        iterations.append(count[0])
+        if keep_coefficients:
+            raw = np.zeros(len(fit["keep"]))
+            raw[fit["keep"]] = beta / fit["scale"]
+            c_raw = base_coef[1:] / fit["scaler"].scale_
+            intercept = base_coef[0] - c_raw @ fit["scaler"].mean_
+            coefficients.append((raw, np.r_[intercept, c_raw]))
+    return np.column_stack(predictions), coefficients, iterations
 
 
-def run_sae_regression(corpus: str):
-    print(f"\n{'='*65}")
-    print(f"  SAE REGRESSION - {corpus.upper()}")
-    print(f"{'='*65}")
+def nested_predictions(frame, controls, features, config, *, progress=False, max_folds=None):
+    y = frame[OUTCOME].to_numpy(float)
+    c = frame[controls].to_numpy(float)
+    groups = frame.text_id.to_numpy()
+    if len(np.unique(groups)) < config["inner_splits"] + 1:
+        raise ValueError("Too few stories for the specified nested group splits")
+    alphas = np.array(config["alphas"], dtype=float)
+    if np.any(alphas <= 0) or np.any(np.diff(alphas) >= 0):
+        raise ValueError("Alphas must be positive, unique, and descending")
+    prediction = np.full(len(y), np.nan)
+    baseline = np.full(len(y), np.nan)
+    fold_ids = np.full(len(y), -1)
+    folds, feature_coefs, control_coefs = [], [], []
+    for fold, (train, test) in enumerate(LeaveOneGroupOut().split(c, y, groups), 1):
+        if max_folds and fold > max_folds:
+            break
+        started = time.perf_counter()
+        inner_sse = np.zeros(len(alphas))
+        inner_n = 0
+        inner_records = []
+        for inner, (tr, va) in enumerate(GroupKFold(config["inner_splits"]).split(c[train], groups=groups[train]), 1):
+            a, b = train[tr], train[va]
+            fit = prepare_fit(c[a], y[a], features[a], config)
+            preds, _, iterations = ridge_path(fit, c[b], features[b], alphas, config)
+            sse = ((preds-y[b, None])**2).sum(axis=0)
+            inner_sse += sse
+            inner_n += len(b)
+            inner_records.append({"inner_fold": inner, "train_text_ids": np.unique(groups[a]).astype(int).tolist(),
+                "validation_text_ids": np.unique(groups[b]).astype(int).tolist(), "sse_by_alpha": sse.tolist(),
+                "n_validation": len(b), "n_retained_features": int(fit["keep"].sum()), "cg_iterations": iterations})
+        chosen = int(np.argmin(inner_sse))
+        fit = prepare_fit(c[train], y[train], features[train], config)
+        preds, coeffs, iterations = ridge_path(fit, c[test], features[test], [alphas[chosen]], config, True)
+        prediction[test] = preds[:, 0]
+        c_test = np.column_stack([np.ones(len(test)), fit["scaler"].transform(c[test])])
+        baseline[test] = c_test @ fit["base_coef"]
+        fold_ids[test] = fold
+        feature_coefs.append(coeffs[0][0])
+        control_coefs.append(coeffs[0][1])
+        folds.append({"fold": fold, "train_text_ids": np.unique(groups[train]).astype(int).tolist(),
+            "test_text_ids": np.unique(groups[test]).astype(int).tolist(), "alpha": float(alphas[chosen]),
+            "inner_mse_by_alpha": (inner_sse/inner_n).tolist(), "selected_inner_mse": float(inner_sse[chosen]/inner_n),
+            "inner_folds": inner_records, "n_retained_features": int(fit["keep"].sum()),
+            "cg_iterations": iterations[0], "seconds": time.perf_counter()-started})
+        if progress and (fold == 1 or fold % 10 == 0 or fold == len(np.unique(groups))):
+            print(f"  fold {fold}/{len(np.unique(groups))}: {folds[-1]['seconds']:.1f}s, alpha={alphas[chosen]:g}", flush=True)
+    return prediction, baseline, fold_ids, folds, np.array(feature_coefs), np.array(control_coefs)
 
-    df, _ = load_corpus_data(corpus)
-    all_results = []
-    all_top_features = []
-    all_folds = []
 
-    for layer in range(1, N_LAYERS + 1):
-        out = analyse_layer(corpus, layer, df)
-        if out is None:
-            continue
-        result, top_features, fold_df = out
-        all_results.append(result)
-        all_top_features.extend(top_features)
-        all_folds.append(fold_df)
+def verify_saved(folder, config_hash, input_records):
+    m = json.loads((folder/"manifest.json").read_text())
+    if m["config_hash"] != config_hash or m["inputs"] != input_records:
+        raise ValueError(f"Resume inputs/config changed: {folder}")
+    if m["source_code"]["sha256"] != sha256_file(__file__):
+        raise ValueError(f"Regression implementation changed; use a fresh output directory: {folder}")
+    for name, rec in m["outputs"].items():
+        if Path(name).name != name or sha256_file(folder/name) != rec["sha256"]:
+            raise ValueError(f"Changed saved regression output: {folder/name}")
+    return m
 
-    results_df = pd.DataFrame(all_results)
-    results_path = REG_DIR / f"{corpus}_sae_regression.csv"
-    results_df.to_csv(results_path, index=False)
-    print(f"\n  Results saved -> {results_path}")
 
-    if all_top_features:
-        feat_df = pd.DataFrame(all_top_features)
-        feat_path = REG_DIR / f"{corpus}_sae_top_features.csv"
-        feat_df.to_csv(feat_path, index=False)
-        print(f"  Top features  -> {feat_path}")
-    else:
-        feat_df = pd.DataFrame()
-
-    if all_folds:
-        fold_path = REG_DIR / f"{corpus}_sae_cv_folds.csv"
-        pd.concat(all_folds, ignore_index=True).to_csv(fold_path, index=False)
-        print(f"  CV folds      -> {fold_path}")
-
-    if not results_df.empty:
-        best = results_df.loc[results_df["heldout_delta_r2_sae_over_surprisal"].idxmax()]
-        print(
-            f"\n  Best layer by held-out delta R2(SAE|surprisal): "
-            f"Layer {int(best['layer'])} "
-            f"({best['heldout_delta_r2_sae_over_surprisal']:.4f})"
-        )
-
-    return results_df, feat_df
+def run_one(corpus, label, kind, representation, frame, columns, paths, config, config_path, output, resume, smoke):
+    folder = output/corpus/kind/label/representation
+    source = paths["features"] if representation == "sae" else paths["dense"]
+    inputs = {"scores": file_record(paths["scores"]), "features": file_record(source),
+              "sae_manifest": file_record(paths["sae_manifest"]),
+              "baseline_predictions": file_record(paths["baseline_predictions"])}
+    config_hash = sha256_file(config_path)
+    if (folder/"manifest.json").exists():
+        if not resume:
+            raise FileExistsError(f"{folder} exists; use --resume or a fresh output directory")
+        verify_saved(folder, config_hash, inputs)
+        print(f"Verified completed: {corpus}/{kind}/{label}/{representation}", flush=True)
+        return
+    if folder.exists() and any(folder.iterdir()):
+        raise FileExistsError(f"Incomplete nonempty output folder: {folder}")
+    features = sparse.load_npz(source) if representation == "sae" else np.load(source, allow_pickle=False)
+    features = features[frame.hidden_row_idx.to_numpy(int)]
+    print(f"Fitting {corpus}/{kind}/{label}/{representation}: {features.shape}", flush=True)
+    values, base, fold_ids, folds, coefficients, controls = nested_predictions(frame, columns, features, config,
+                                                       progress=True, max_folds=1 if smoke else None)
+    if smoke:
+        print(f"SMOKE ONLY: completed one outer fold in {folds[0]['seconds']:.1f}s; no research outputs written", flush=True)
+        return
+    if not np.isfinite(values).all():
+        raise ValueError("Incomplete outer prediction coverage")
+    baseline = read_table(paths["baseline_predictions"])
+    if frame.row_uid.tolist() != baseline.row_uid.tolist() or not np.allclose(base, baseline.pred_matched_spillover, atol=1e-8, rtol=0):
+        raise ValueError("Nested evaluator's baseline differs from verified baseline")
+    result = frame[["row_uid", "text_id", "word_position", OUTCOME]].copy()
+    result["fold"] = fold_ids
+    result["prediction"] = values
+    result["baseline_prediction"] = base
+    folder.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="ridge_", dir=folder.parent) as temporary:
+        temp = Path(temporary)
+        result.to_csv(temp/"predictions.csv", index=False)
+        np.savez_compressed(temp/"coefficients.npz", feature_coef_raw=coefficients, control_coef_raw=controls)
+        write_json(temp/"folds.json", {"controls": ["intercept"]+columns, "folds": folds})
+        manifest = {**run_metadata(), "schema_version": 1, "corpus": corpus, "label": label,
+                    "hook": next(h for h, l in HOOK_FILES.items() if l == label),
+                    "kind": kind, "representation": representation, "config": config, "config_hash": config_hash,
+                    "inputs": inputs, "source_code": file_record(__file__), "n_rows": len(frame),
+                    "n_features_input": features.shape[1], "n_outer_folds": len(folds),
+                    "coefficient_policy": "raw feature units, original feature column IDs; intercept then baseline columns; row order is folds.json",
+                    "outputs": {p.name: {"sha256": sha256_file(p)} for p in temp.iterdir()}}
+        write_json(temp/"manifest.json", manifest)
+        for p in temp.iterdir():
+            if p.name != "manifest.json":
+                p.replace(folder/p.name)
+        (temp/"manifest.json").replace(folder/"manifest.json")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="SparseRT - Step 05: Grouped held-out SAE regression"
-    )
-    parser.add_argument(
-        "--corpus",
-        choices=["provo", "natural_stories", "both"],
-        default="both",
-    )
-    args = parser.parse_args()
-
-    corpora = (
-        ["provo", "natural_stories"] if args.corpus == "both"
-        else [args.corpus]
-    )
-
-    for corpus in corpora:
-        try:
-            run_sae_regression(corpus)
-        except (FileNotFoundError, ValueError) as e:
-            print(f"\n[SKIP] {e}\n")
-
-    print("\nSAE regression complete.")
-    print("Next step: inspect stability before feature interpretation.")
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--corpus", choices=["both", "provo", "natural_stories"], default="both")
+    p.add_argument("--data-dir", type=Path, default=ROOT/"data/prepared_v2")
+    p.add_argument("--results-dir", type=Path, default=ROOT/"results/surprisal_bos")
+    p.add_argument("--baseline-dir", type=Path, default=ROOT/"results/baseline_bos")
+    p.add_argument("--sae-dir", type=Path, default=ROOT/"results/sae_bos")
+    p.add_argument("--output-dir", type=Path, default=ROOT/"results/sae_regression_v2")
+    p.add_argument("--config", type=Path, default=ROOT/"configs/sae_regression.json")
+    p.add_argument("--hooks", nargs="+", choices=list(HOOK_FILES.values()), default=list(HOOK_FILES.values()))
+    p.add_argument("--states", nargs="+", choices=["prefix", "post"], default=["prefix", "post"])
+    p.add_argument("--representations", nargs="+", choices=["dense", "sae"], default=["dense", "sae"])
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--smoke", action="store_true", help="One outer fold per combination; prints timing only and writes no results")
+    args = p.parse_args()
+    config = json.loads(args.config.read_text())
+    if config["context"] != "matched" or config["spillover_lags"] != 2:
+        raise ValueError("This version verifies the frozen matched-context, two-lag baseline")
+    corpora = ["provo", "natural_stories"] if args.corpus == "both" else [args.corpus]
+    with threadpool_limits(limits=config["threads"]):
+        for corpus in corpora:
+            validate_corpus(corpus, args.data_dir, args.results_dir)
+            baseline_manifest = json.loads((args.baseline_dir/f"{corpus}_baseline_manifest.json").read_text())
+            for name, rec in baseline_manifest["outputs"].items():
+                if sha256_file(args.baseline_dir/name) != rec["sha256"]:
+                    raise ValueError(f"Baseline changed: {name}")
+            scores = args.results_dir/f"{corpus}_surprisal.csv"
+            frame, _, models = build_design(read_table(scores), config["spillover_lags"])
+            for label in args.hooks:
+                folder = args.sae_dir/corpus/label
+                m = json.loads((folder/"manifest.json").read_text())
+                if sha256_file(args.results_dir/f"{corpus}_extraction_manifest.json") != m["inputs"]["extraction_manifest"]["sha256"]:
+                    raise ValueError("SAE extraction source changed")
+                for name, rec in m["outputs"].items():
+                    if sha256_file(folder/name) != rec["sha256"]:
+                        raise ValueError(f"SAE output changed: {folder/name}")
+                rows = read_table(folder/"rows.csv")
+                if rows.iloc[frame.hidden_row_idx.to_numpy(int)].row_uid.tolist() != frame.row_uid.tolist():
+                    raise ValueError("SAE/source row alignment mismatch")
+                for kind in args.states:
+                    stem = "prefix_hidden" if kind == "prefix" else "hidden"
+                    paths = {"scores": scores, "features": folder/f"{kind}_features.npz",
+                             "dense": args.results_dir/f"{corpus}_{stem}_{label}.npy",
+                             "sae_manifest": folder/"manifest.json",
+                             "baseline_predictions": args.baseline_dir/f"{corpus}_predictions.csv"}
+                    if sha256_file(paths["dense"]) != m["inputs"][kind]["sha256"]:
+                        raise ValueError("SAE and dense states have different provenance")
+                    for representation in args.representations:
+                        run_one(corpus, label, kind, representation, frame, models["matched_spillover"], paths,
+                                config, args.config, args.output_dir, args.resume, args.smoke)
 
 
 if __name__ == "__main__":

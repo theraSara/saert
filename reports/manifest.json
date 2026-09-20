@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "description": "Aggregate results only. Paths are repository-relative. Full inputs and fits stay local.",
+  "files": {
+    "baseline/model_comparison.csv": {
+      "sha256": "e012b35106d9de265a267e36cad2156271648768d48b63b4bf44bfb9dcea6ea1",
+      "bytes": 1081,
+      "source": "results/baseline_bos/diagnostics/model_comparison.csv",
+      "source_sha256": "fc25fd14189b8ed777230ce9678c74d1fadec292a00578d661fabf4f2352a688",
+      "transformation": "LF line endings"
+    },
+    "baseline/paired_contrasts.csv": {
+      "sha256": "541c8925ec176108a180ebe66a6414bfb0cf853eb95c31d1a346943fce6170ba",
+      "bytes": 1872,
+      "source": "results/baseline_bos/diagnostics/paired_contrasts.csv",
+      "source_sha256": "2fb0ccb8d3064895baac4bba88d1b3c32add58a621269ebc589a76a41ad5149a",
+      "transformation": "LF line endings"
+    },
+    "baseline/corpus_quality.csv": {
+      "sha256": "45d06fcbcef4d370db6ffe0b9dc7197af21681bbe1fe61d961578dbf697e5aac",
+      "bytes": 404,
+      "source": "results/baseline_bos/diagnostics/corpus_quality.csv",
+      "source_sha256": "359541945056d2ef6b1f5bd1a816d39ffaef0c94d10c9146cb1ccea69f05424a",
+      "transformation": "LF line endings"
+    },
+    "baseline/collinearity.csv": {
+      "sha256": "b3d522eac2c79a3e976dde76cf7bdc4ac1d81b6127a1ef7d77965f1ddde9e1f9",
+      "bytes": 3882,
+      "source": "results/baseline_bos/diagnostics/collinearity.csv",
+      "source_sha256": "8c5554cb36e022adb20200e27077d00bdbc2b9701fb6d8f2b7b31f9b39aba4e3",
+      "transformation": "LF line endings"
+    },
+    "baseline/per_text_heterogeneity.csv": {
+      "sha256": "f891fee2ece68f66ea76084831f330cc3ad2bec07041e094f8c57c54cd41064e",
+      "bytes": 362,
+      "source": "results/baseline_bos/diagnostics/per_text_heterogeneity.csv",
+      "source_sha256": "b3808a31fabdb206a15d0c5ce3b0931151a4a0e0b46c26152ff9de06d104d4aa",
+      "transformation": "LF line endings"
+    },
+    "baseline/heldout_improvement.png": {
+      "sha256": "aeeccb25f98034021c60b526a7b80eb40a2a8520a787292b381fda7b78803129",
+      "bytes": 232832,
+      "source": "results/baseline_bos/diagnostics/heldout_improvement.png",
+      "source_sha256": "aeeccb25f98034021c60b526a7b80eb40a2a8520a787292b381fda7b78803129",
+      "transformation": "none"
+    },
+    "baseline/heldout_improvement.pdf": {
+      "sha256": "d21566ebc605f4670599687a77d8d60d0c8b8dc0e2e5adeb9980885d28b5a39c",
+      "bytes": 24504,
+      "source": "results/baseline_bos/diagnostics/heldout_improvement.pdf",
+      "source_sha256": "d21566ebc605f4670599687a77d8d60d0c8b8dc0e2e5adeb9980885d28b5a39c",
+      "transformation": "none"
+    },
+    "sae_fidelity/behavior_summary.csv": {
+      "sha256": "f53c14f09d6574ffd1c54e2e324183bbbe41bab5f8d68fdb3787c9c2c8bb6e5f",
+      "bytes": 9492,
+      "source": "results/sae_bos/diagnostics/behavior_summary.csv",
+      "source_sha256": "42ccacacf396c321749afda3542f23e7c723e4b4329e149c81cf0ad82929274a",
+      "transformation": "LF line endings"
+    },
+    "sae_fidelity/geometry_summary.csv": {
+      "sha256": "1fa61f6824cc2477cac19ead5fc49d10ead7c8238d1dc240989b52cee84fa670",
+      "bytes": 13481,
+      "source": "results/sae_bos/diagnostics/geometry_summary.csv",
+      "source_sha256": "65d9fe00193896229a7bbbbb28bb4a3d3f6ba2af58040b7498075d52e11d2cca",
+      "transformation": "LF line endings"
+    },
+    "sae_fidelity/sae_fidelity.png": {
+      "sha256": "286263842d283da3af7a97cd099d9d2220eb1b945476663d441c5e2dde26e65a",
+      "bytes": 472827,
+      "source": "results/sae_bos/diagnostics/sae_fidelity.png",
+      "source_sha256": "286263842d283da3af7a97cd099d9d2220eb1b945476663d441c5e2dde26e65a",
+      "transformation": "none"
+    },
+    "sae_fidelity/sae_fidelity.pdf": {
+      "sha256": "24251f5b88826b459736fdcca6166f8d1f49b915f785314736e9e3d5ce1bafc3",
+      "bytes": 58854,
+      "source": "results/sae_bos/diagnostics/sae_fidelity.pdf",
+      "source_sha256": "24251f5b88826b459736fdcca6166f8d1f49b915f785314736e9e3d5ce1bafc3",
+      "transformation": "none"
+    },
+    "sae_prediction/primary_results.csv": {
+      "sha256": "4c278ed996ba5352cbbff66ef46a52e8adf8f862f422cf0cff0aa57995a1ba05",
+      "bytes": 620,
+      "source": "results/sae_regression_v2/diagnostics/primary_results.csv",
+      "source_sha256": "e849b2b175a25086ee7c0ae9da72e5cf401c9e62321e758731bd481a12bb2a78",
+      "transformation": "LF line endings"
+    },
+    "sae_prediction/model_comparison.csv": {
+      "sha256": "46f382a2c818bd7ea8f10864509c30b634e5252b3866ccce9beffc702cf7116c",
+      "bytes": 22571,
+      "source": "results/sae_regression_v2/diagnostics/model_comparison.csv",
+      "source_sha256": "56a7b5db4339a641dd22a832e3f61aba6ff30970cadf5d88d34d363cb5d8ec39",
+      "transformation": "LF line endings"
+    },
+    "sae_prediction/sae_vs_dense.csv": {
+      "sha256": "034cf78a637d66d8185233df416840e8caf9bffe1625b48755b3ca79a75afb8d",
+      "bytes": 903,
+      "source": "results/sae_regression_v2/diagnostics/sae_vs_dense.csv",
+      "source_sha256": "1294b4c5ec9d82c2b64564ee2fdcee45f56cbdfd37d1fa702834859d6d536e54",
+      "transformation": "LF line endings"
+    },
+    "sae_prediction/feature_shift_audit.csv": {
+      "sha256": "f0c89b8f5ca097a67c77f42cdd013061e382c1a8187bb82998a8e758273a543b",
+      "bytes": 588,
+      "source": "results/sae_regression_v2/diagnostics/feature_shift_audit.csv",
+      "source_sha256": "3600695910ee0e2c9ae88a6321817e505a7b6dd802a49b84e48ab098d644d30b",
+      "transformation": "LF line endings"
+    },
+    "sae_prediction/heldout_representation_gain.png": {
+      "sha256": "286b74674c39623cfa9f2326c7e6f11c3620affbde130fc2fd03b93eb6907f7f",
+      "bytes": 152827,
+      "source": "results/sae_regression_v2/diagnostics/heldout_representation_gain.png",
+      "source_sha256": "286b74674c39623cfa9f2326c7e6f11c3620affbde130fc2fd03b93eb6907f7f",
+      "transformation": "none"
+    },
+    "sae_prediction/heldout_representation_gain.pdf": {
+      "sha256": "773ae16ca2e377d5bd3b6a4c4f785d3474e96c0c9950bd7be82017ebd1a064dd",
+      "bytes": 23761,
+      "source": "results/sae_regression_v2/diagnostics/heldout_representation_gain.pdf",
+      "source_sha256": "773ae16ca2e377d5bd3b6a4c4f785d3474e96c0c9950bd7be82017ebd1a064dd",
+      "transformation": "none"
+    },
+    "sae_prediction/layer_gain_heatmap.png": {
+      "sha256": "b1a1c877aef578365c13259b4fd76402c5dbf95d9c54b41e6ed35cb35d8f68b0",
+      "bytes": 487112,
+      "source": "results/sae_regression_v2/diagnostics/layer_gain_heatmap.png",
+      "source_sha256": "b1a1c877aef578365c13259b4fd76402c5dbf95d9c54b41e6ed35cb35d8f68b0",
+      "transformation": "none"
+    },
+    "sae_prediction/layer_gain_heatmap.pdf": {
+      "sha256": "8f90618bbc77c4b114e52f2fb85106efca64ffa5446e89c0d265fa9a8adbb86c",
+      "bytes": 65834,
+      "source": "results/sae_regression_v2/diagnostics/layer_gain_heatmap.pdf",
+      "source_sha256": "8f90618bbc77c4b114e52f2fb85106efca64ffa5446e89c0d265fa9a8adbb86c",
+      "transformation": "none"
+    },
+    "sae_prediction/hook_selection.csv": {
+      "sha256": "a2087f831060c4196e687968d3d1d16c375f3e91f53e2dae49cfa630da00630a",
+      "bytes": 930,
+      "source": "results/sae_regression_v2/diagnostics/selected_hooks.csv",
+      "source_sha256": "b0a4be790895f57effe6948f747a3bf67b010df0f022772e558fb12bf60f293d",
+      "transformation": "Grouped fold counts; LF line endings"
+    },
+    "sae_prediction/regularization_summary.csv": {
+      "sha256": "d5e30e480ae32116c365b6447574ee31d16e9a7d10e093874ea725f6abe91207",
+      "bytes": 323,
+      "source": "results/sae_regression_v2/diagnostics/tuning.csv",
+      "source_sha256": "244ad960dc1f41c269111c99f0c1509ef823851ba6c6d9e8bfa123bf8a5d85ec",
+      "transformation": "Grouped grid-boundary counts; LF line endings"
+    },
+    "scaling_sensitivity/comparison.csv": {
+      "sha256": "0ddfe34c0c63e7c0ce9eaf337656fbc3feaf83345d2edec3dc803815c486cd77",
+      "bytes": 805,
+      "source": "results/scaling_sensitivity_v1/comparison.csv",
+      "source_sha256": "c6f35099fe140c80289bf034064fdac0f42b6610afaa80ca648db8311ec3aab7",
+      "transformation": "LF line endings"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "analysis": "Exploratory response to an observed L01 feature-scaling failure",
+  "scope": "Fixed L01 SAE only, both corpora, prefix and post states. Does not replace the all-hook primary analysis.",
+  "scale_rule": "max(training feature SD, median SD across retained training features)",
+  "tuned_scale_choices": 0,
+  "hooks": ["L01"],
+  "states": ["prefix", "post"],
+  "reference_config": "configs/sae_regression.json",
+  "interpretation": "Declared before running this follow-up, after observing original results. Not independent confirmation. No test-derived clipping or exclusions."
+}

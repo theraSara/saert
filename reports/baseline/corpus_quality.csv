@@ -1,0 +1,3 @@
+corpus,measure,texts,stimulus_units,eligible_RT_units,excluded_RT_units,first_units_scored,max_model_tokens_per_text,mean_RT_ms,median_RT_ms,mean_surprisal_bits,max_context_score_difference_bits
+provo,FFD,55,2743,2743,0,55,81,207.66961003223392,207.2289156626506,6.2017288071681165,0.0
+natural_stories,SPR,10,10256,10256,0,10,1360,338.5118949693967,330.07346592661116,5.405188729219782,21.33870526496321
