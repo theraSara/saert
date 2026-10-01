@@ -314,4 +314,185 @@ The practical intuition is:
 In my implementation, `src/srp_interpret.py` loads GPT-2’s unembedding matrix, trains or loads a TopK sparse dictionary over that vocabulary geometry, and then decomposes selected SAE decoder vectors through that dictionary. The output gives logit-lens tokens, SRP components, and fidelity diagnostics.
 
 The key caveat: SRP supports interpretation of the feature’s readout direction. It does not prove that the feature causally changes human reading time. For the meeting, I should present it as a microscope for feature meaning, not as the main prediction result.
+---
+
+## Meeting presentation outline — updated
+
+### Agenda
+
+1. Confirm the project framing and contribution.
+2. Walk through the current evidence in order: baseline → SAE prediction → layer selection → residual RT → robustness.
+3. Discuss whether the Provo and Natural Stories results should be framed as the same story or as complementary evidence.
+4. Decide what must be finished before feature interpretation becomes the main paper result.
+5. Agree on next analyses for publication: feature validation, ablations, and stronger causal checks.
+
+### Overview
+
+Question: Do sparse internal features from GPT-2 predict human reading-time difficulty beyond lexical controls and surprisal, and do the predictive features point toward interpretable linguistic mechanisms?
+
+### Baseline results
+
+- Surprisal is doing useful work.
+- Spillover predictors, especially previous-word surprisal, help.
+- Spillover matters more in Natural Stories, which makes sense because self-paced reading can include delayed processing from earlier words.
+
+### SAE prediction results
+
+There are two states per word:
+
+- Prefix / before-word: the residual stream at the position before the word’s first subtoken. The model has not seen the target word yet, so this is closer to anticipation.
+- Post / after-word: the residual stream at the word’s final subtoken. The model has seen the word, so this is closer to integration.
+
+Main results:
+
+- Provo: SAE features outperform dense states in both prefix and post settings.
+- Natural Stories: both representations help, but dense states outperform SAE features in the main selected comparison.
+- After-word states are stronger than before-word states, which is expected because the after-word state includes the target word.
+
+Why compare dense vs. SAE?
+
+- Dense vs. SAE asks whether sparse decomposition helps or hurts compared with the raw hidden state carrying the same information.
+- If SAE wins, the sparse decomposition is not only interpretable; it is predictive.
+- If dense wins, the signal may be more distributed than the current SAE feature readout can capture.
+
+### Hook/layer selection
+
+Layer selection uses nested cross-validation over held-out texts. The selected layer reflects which hook generalized best to unseen texts.
+
+Provo: L01
+
+- The SAE signal is early and local.
+- It likely reflects lexical form, punctuation, position, short-context information, and frequency-like structure.
+- This should not be over-described as deep syntax or discourse.
+
+Natural Stories: L08
+
+- Natural Stories relies more on mid-layer contextual representations.
+- The layer choice is less stable than Provo, so the claim should be cautious.
+
+Possible framing:
+
+- Provo shows that sparse lexical/local features are strong predictors of eye-tracking reading time.
+- Natural Stories motivates higher-level feature interpretation because the selected layer is contextual and mid-level.
+
+### Residualized RT analysis
+
+RT′ means reading time after removing lower-level predictors.
+
+Two versions:
+
+- RT′ = RT − controls
+- RT′ = RT − controls − surprisal
+
+This asks whether internal representations predict reading-time variation after removing lexical controls and, in the stricter version, after removing surprisal.
+
+Current interpretation:
+
+- Provo SAE L01 still predicts residual RT strongly, especially after-word.
+- Natural Stories after-word L08 still has signal, but dense L08 is stronger than SAE L08.
+- This suggests that Provo’s sparse-feature result is robust, while Natural Stories may contain more distributed contextual signal.
+
+### Participant-level robustness
+
+The participant-level notebook asks whether the aggregate item-level result is carried by many readers.
+
+Method:
+
+- Keep the trained word-level predictions fixed.
+- Evaluate them against individual participant trials.
+- For each participant, compare model prediction against the surprisal-baseline prediction.
+
+Result:
+
+- Provo is robust across participants.
+- Natural Stories is more mixed.
+- Natural Stories before-word SAE is positive across participants.
+- Natural Stories after-word is weaker at the participant level, even though it is strong in aggregate item-level results.
+
+How to phrase this:
+
+- The Provo result generalizes cleanly across participants.
+- Natural Stories should be presented more cautiously: the item-level effect is useful, but participant-level variation is larger.
+
+### Mixed-effects robustness
+
+The mixed-effects analysis tests the same question at the trial level while controlling for participant and item variation.
+
+Model:
+
+```text
+trial log RT ~ baseline prediction + representation gain
+               + (1 | participant)
+               + (1 | word/item)
+```
+
+Definitions:
+
+- Baseline prediction: predicted log RT from the surprisal-baseline model.
+- Model prediction: predicted log RT from the dense or SAE model.
+- Representation gain: model prediction − baseline prediction.
+
+Interpretation:
+
+- If representation gain has a positive coefficient, then the dense/SAE prediction adds trial-level information beyond the baseline.
+- The random intercepts control for slow vs. fast readers and easy vs. hard words/items.
+
+Result:
+
+- The representation-gain coefficient is positive for every selected comparison.
+- Provo after-word SAE is especially strong.
+- Natural Stories after-word dense is strongest for Natural Stories.
+- Natural Stories SAE remains positive, but smaller than dense.
+
+How to phrase this:
+
+- The mixed-effects results support the main direction: selected dense and SAE predictions add trial-level signal beyond the surprisal baseline after accounting for participant and item variation.
+- This does not replace the held-out aggregate evaluation. It answers a different reviewer concern: whether the effect survives participant and item random intercepts.
+
+### Feature interpretation status
+
+Current methods:
+
+1. Top predictive features from regression.
+2. Max-activating examples.
+3. Logit-lens token summaries.
+4. Neuronpedia labels where available.
+5. SRP-style decomposition.
+
+Interpretation caveat:
+
+- These methods support feature meaning, but they are not yet causal evidence.
+- The next step is to validate candidate features more directly.
+
+### Discussion Summary
+
+- The project is moving in the right direction for a mechanistic psycholinguistics paper.
+- Provo provides the cleaner sparse-feature prediction story.
+- Natural Stories provides the more contextual and linguistically interesting layer story, but it needs cautious framing.
+- Participant-level and mixed-effects checks strengthen the methodology section.
+- Feature interpretation should now focus on a small number of stable, predictive features rather than many exploratory examples.
+
+### Action Items & Next Steps
+
+1. Decide whether the paper’s main story should center on Provo robustness, Natural Stories contextuality, or the contrast between the two.
+2. Select a small set of candidate SAE features for interpretation.
+3. Add validation examples for feature labels.
+4. Add controls against random matched SAE features.
+5. Consider ablations or feature steering to test whether candidate features change surprisal or prediction behavior.
+6. Prepare a concise results figure set: baseline, SAE gains, layer selection, residual RT, participant/mixed-effects robustness.
+
+### Notes & Additional Comments
+
+- Avoid claiming that L01 features are high-level linguistic features.
+- For Natural Stories, emphasize that dense states carry stronger distributed signal than SAE features.
+- For reviewers, the strongest robustness message is that the effect survives held-out text evaluation and trial-level mixed-effects checks.
+- The feature-interpretation section should be framed as the next mechanistic step, not as fully proven causal evidence yet.
+
+### Attachments / References
+
+- `03_rt_prediction.ipynb` — SAE prediction and hook selection.
+- `04_residual_rt.ipynb` — RT′ analyses.
+- `07_participant_robustness.ipynb` — participant-level checks.
+- `08_mixed_effects.ipynb` — crossed mixed-effects robustness.
+- `05_feature_interpretation.ipynb` — current feature interpretation outputs.
 

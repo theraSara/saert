@@ -182,15 +182,66 @@ def annotated_heatmap(ax, frame, *, fmt=".2f", signed=False, errors=False, norm=
     return im
 
 
+def _hex_to_rgb(hex_color):
+    hex_color = hex_color.lstrip("#")
+    return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _rgb_to_hex(rgb):
+    return "#" + "".join(f"{max(0, min(255, int(round(v)))):02x}" for v in rgb)
+
+
+def _blend_with_white(hex_color, strength):
+    strength = float(np.clip(strength, 0, 1))
+    rgb = np.array(_hex_to_rgb(hex_color), dtype=float)
+    white = np.array([255, 255, 255], dtype=float)
+    return _rgb_to_hex((1 - strength) * white + strength * rgb)
+
+
+def _dataset_color(value):
+    label = str(value).lower()
+    if "provo" in label:
+        return GREEN
+    if "natural" in label:
+        return PINK
+    return MUTED
+
+
 def focus_table(frame, *, important=(), formats=None, signed_columns=(), caption=""):
     table = frame.style.hide(axis="index").format(formats or {}, na_rep="—")
     table = table.set_properties(**{"padding": "6px 10px", "color": INK, "font-size": "13px"})
     for col in important:
         table = table.set_properties(subset=[col], **{"font-weight": "bold"})
     if signed_columns:
-        extent = max(float(frame[list(signed_columns)].abs().max().max()), 1e-6)
-        table = table.background_gradient(cmap=IMPROVEMENT, subset=list(signed_columns), axis=None,
-                                          vmin=-extent, vmax=extent)
+        signed_columns = [c for c in signed_columns if c in frame.columns]
+        if "Dataset" in frame.columns and signed_columns:
+            maxima = {c: max(float(pd.to_numeric(frame[c], errors="coerce").clip(lower=0).max()), 1e-6)
+                      for c in signed_columns}
+
+            def corpus_gradient(row):
+                styles = pd.Series("", index=row.index)
+                base = _dataset_color(row.get("Dataset", ""))
+                for col in signed_columns:
+                    value = pd.to_numeric(pd.Series([row[col]]), errors="coerce").iloc[0]
+                    if pd.isna(value):
+                        continue
+                    if value > 0:
+                        strength = 0.12 + 0.72 * min(value / maxima[col], 1.0)
+                        bg = _blend_with_white(base, strength)
+                    elif value < 0:
+                        strength = 0.08 + 0.30 * min(abs(value) / max(abs(value), maxima[col]), 1.0)
+                        bg = _blend_with_white(LIGHT, strength)
+                    else:
+                        bg = "#FFFFFF"
+                    text = "#FFFFFF" if value > 0 and strength > 0.58 else INK
+                    styles[col] = f"background-color: {bg}; color: {text}"
+                return styles
+
+            table = table.apply(corpus_gradient, axis=1)
+        elif signed_columns:
+            extent = max(float(frame[list(signed_columns)].abs().max().max()), 1e-6)
+            table = table.background_gradient(cmap=IMPROVEMENT, subset=list(signed_columns), axis=None,
+                                              vmin=-extent, vmax=extent)
     table = table.set_table_styles([{"selector": "th", "props": [("text-align", "left"), ("border-bottom", f"2px solid {INK}")]},
                                     {"selector": "caption", "props": [("caption-side", "bottom"), ("text-align", "left")]}])
     return table.set_caption(caption)
