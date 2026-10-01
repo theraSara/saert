@@ -2,7 +2,7 @@ from pathlib import Path
 import json
 import tempfile
 import unittest
-from src.report_bundle import digest, verify_bundle
+from archive.report_bundle import digest, verify_bundle
 
 class ReportBundleTests(unittest.TestCase):
     def test_valid_bundle_and_modified_file(self):

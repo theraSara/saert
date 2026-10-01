@@ -25,13 +25,23 @@ Stages:
   sae-notebook Execute 02_sae_reconstruction.ipynb from saved SAE outputs.
   regression Fit nested dense/SAE ridge comparisons; resume verified completed fits.
   regression-notebook Execute 03_sae_reading_time_prediction.ipynb from saved predictions.
+  regression-report Regenerate regression diagnostics from full local predictions.
+  residual  Two-stage RT' analysis: foldwise residualized RT predicted by surprisal,
+            dense states and SAE features (targets resid_controls and
+            resid_controls_surprisal); resumes verified completed fits.
+  residual-summary Rebuild results/residual_rt/summary.csv from saved predictions only.
+  interpret Logit lens + max-activating examples for the top regression features.
+  neuronpedia Fetch cached Neuronpedia auto-interp labels (network; cached on disk).
+  srp       Train/load the GPT-2 Sparse Readout Prism and decompose top features.
   latex     Execute 90_export_latex_tables.ipynb (table exports only).
   scaling   Run the fixed-L01 scaling sensitivity to a NEW SCALING_ROOT (both corpora).
   scaling-notebook Execute 04_feature_scaling_robustness.ipynb from saved follow-up results.
   export-reports Copy a verified allowlist of local aggregate results into reports/.
   verify-reports Verify the shareable report bundle without raw data or models.
-  regression-report Regenerate regression diagnostics from full local predictions.
   all       Run research setup through baseline diagnostics (requires raw corpora).
+  pipeline  Run EVERY analysis stage in order, prepare through srp (+ scaling for both).
+            Use on an empty results/ (see NOTES); about 1-1.5 h; needs network for
+            Hugging Face/Neuronpedia unless cached.
   help      Show these instructions. Running without arguments also shows help.
 
 CORPUS is both (default), natural_stories, or provo.
@@ -41,12 +51,19 @@ For the outputs already generated:
   bash run.sh baseline both
   bash run.sh notebook both
 
-For a fresh run:
+For a fresh run, in order:
   bash run.sh check
   bash run.sh test
   bash run.sh prepare both
   bash run.sh extract both
   bash run.sh verify both
+  bash run.sh baseline both
+  bash run.sh sae both
+  bash run.sh regression both
+  bash run.sh residual both
+  bash run.sh interpret both
+  bash run.sh neuronpedia both
+  bash run.sh srp both
 
 Or run all stages to NEW directories:
   PREPARED_ROOT=data/prepared_repeat RESULTS_ROOT=results/surprisal_repeat BASELINE_ROOT=results/baseline_repeat bash run.sh all both
@@ -64,6 +81,11 @@ Optional environment variables:
   FIDELITY_WINDOWS Windows sampled per corpus, at most one per text (default: 4).
   SAE_BATCH_SIZE   Encoding batch size (default: 128).
   REGRESSION_ROOT  Nested regression outputs (default: results/sae_regression_v2).
+  RESIDUAL_ROOT    Two-stage RT' outputs (default: results/residual_rt).
+  RESIDUAL_TARGETS Space-separated subset of: resid_controls resid_controls_surprisal
+                   (default: both).
+  INTERPRETATION_ROOT Feature interpretation outputs (default: results/feature_interpretation).
+  NP_LAYERS        Neuronpedia layers, e.g. "1 8" (default) or "all".
   RIDGE_CONFIG     Frozen regression config (default: configs/sae_regression.json).
   LaTeX notebook exports use reports/tables/; full experiment outputs stay in results/.
   SCALING_ROOT     Fixed-L01 follow-up (default: results/scaling_sensitivity_v1).
@@ -72,6 +94,8 @@ Optional environment variables:
   PROVO_RT         FFD (default, matches our runs), GZD, or TRT.
   GPT2_REVISION    Defaults to the exact GPT-2 commit used in our completed runs.
   DEVICE           cpu, cuda, or mps; SAE defaults to CPU, surprisal auto-selects.
+                   Use DEVICE=cpu for paper-final extraction (TransformerLens warns
+                   that MPS may give silently incorrect results).
   HF_HUB_OFFLINE   Set to 1 to use cached Hugging Face files only.
   OVERWRITE        Set to 1 to explicitly replace the selected stage's outputs.
 
@@ -90,7 +114,7 @@ stage="${1:-help}"
 corpus="${2:-both}"
 if (( $# > 2 )); then usage >&2; exit 2; fi
 case "$stage" in help|-h|--help) usage; exit 0 ;; esac
-case "$stage" in check|test|prepare|extract|verify|baseline|diagnostics|notebook|sae-pilot|sae|sae-report|sae-notebook|regression|regression-notebook|regression-report|latex|scaling|scaling-notebook|export-reports|verify-reports|all) ;; *) usage >&2; exit 2 ;; esac
+case "$stage" in check|test|prepare|extract|verify|baseline|diagnostics|notebook|sae-pilot|sae|sae-report|sae-notebook|regression|regression-notebook|regression-report|residual|residual-summary|interpret|neuronpedia|srp|latex|scaling|scaling-notebook|export-reports|verify-reports|all|pipeline) ;; *) usage >&2; exit 2 ;; esac
 case "$corpus" in both|natural_stories|provo) ;; *) echo "Unknown corpus: $corpus" >&2; exit 2 ;; esac
 
 python_bin="${PYTHON_BIN:-python}"
@@ -103,6 +127,8 @@ sae_root="${SAE_ROOT:-results/sae_bos}"
 sae_pilot_root="${SAE_PILOT_ROOT:-results/sae_pilot}"
 sae_revision="${SAE_REVISION:-57d08a4fd333fbf18caf3fbea63ceeb88e2f50d9}"
 regression_root="${REGRESSION_ROOT:-results/sae_regression_v2}"
+residual_root="${RESIDUAL_ROOT:-results/residual_rt}"
+interpretation_root="${INTERPRETATION_ROOT:-results/feature_interpretation}"
 ridge_config="${RIDGE_CONFIG:-configs/sae_regression.json}"
 provo_rt="${PROVO_RT:-FFD}"
 # Pinned to the revision in both completed BOS extraction manifests.
@@ -121,6 +147,14 @@ esac
 case "$provo_rt" in FFD|GZD|TRT) ;; *) echo "PROVO_RT must be FFD, GZD, or TRT" >&2; exit 2 ;; esac
 device_args=()
 if [[ -n "${DEVICE:-}" ]]; then device_args=(--device "$DEVICE"); fi
+
+# Space-separated lists from the environment, split into arrays without eval.
+read -r -a residual_targets <<< "${RESIDUAL_TARGETS:-resid_controls resid_controls_surprisal}"
+for t in "${residual_targets[@]}"; do
+  case "$t" in resid_controls|resid_controls_surprisal) ;;
+    *) echo "Unknown RESIDUAL_TARGETS entry: $t" >&2; exit 2 ;; esac
+done
+read -r -a np_layers <<< "${NP_LAYERS:-1 8}"
 
 run_command() {
   # Print the actual command for inspection and copying; no eval or shell expansion.
@@ -147,7 +181,7 @@ prepare_data() {
   if [[ "$corpus" != natural_stories ]]; then provo_args=(--provo-rt "$provo_rt"); fi
   run_command "$python_bin" -s src/data.py \
     --corpus "$corpus" --data-dir "$raw_root" --output-dir "$prepared_root" \
-    --tokenizer-revision "$revision" "${provo_args[@]}" "${overwrite_args[@]}"
+    --tokenizer-revision "$revision" ${provo_args[@]+"${provo_args[@]}"} ${overwrite_args[@]+"${overwrite_args[@]}"}
 }
 
 extract_surprisal() {
@@ -158,7 +192,7 @@ extract_surprisal() {
     --corpus "$corpus" --data-dir "$prepared_root" --output-dir "$results_root" \
     --revision "$revision" --window-size 1024 --stride 512 \
     --hidden-context 128 --hidden-stride 64 --save-prefix \
-    "${device_args[@]}" "${overwrite_args[@]}"
+    ${device_args[@]+"${device_args[@]}"} ${overwrite_args[@]+"${overwrite_args[@]}"}
 }
 
 verify_outputs() {
@@ -170,7 +204,7 @@ fit_baseline() {
   run_command "$python_bin" -s src/baseline.py \
     --corpus "$corpus" --data-dir "$prepared_root" --results-dir "$results_root" \
     --output-dir "$baseline_root" --spillover-lags "${SPILLOVER_LAGS:-2}" \
-    --bootstrap "${BOOTSTRAP:-2000}" --seed 42 "${overwrite_args[@]}"
+    --bootstrap "${BOOTSTRAP:-2000}" --seed 42 ${overwrite_args[@]+"${overwrite_args[@]}"}
 }
 
 export_diagnostics() {
@@ -191,7 +225,7 @@ extract_sae() {
     --output-dir "$target_root" --revision "$sae_revision" \
     --fidelity-windows "${FIDELITY_WINDOWS:-4}" --batch-size "${SAE_BATCH_SIZE:-128}" \
     --seed 42 --threads "${OMP_NUM_THREADS:-4}" \
-    "${hook_args[@]}" "${device_args[@]}" "${overwrite_args[@]}"
+    ${hook_args[@]+"${hook_args[@]}"} ${device_args[@]+"${device_args[@]}"} ${overwrite_args[@]+"${overwrite_args[@]}"}
 }
 
 sae_report() {
@@ -208,6 +242,38 @@ fit_sae_regression() {
     --corpus "$corpus" --data-dir "$prepared_root" --results-dir "$results_root" \
     --baseline-dir "$baseline_root" --sae-dir "$sae_root" --output-dir "$regression_root" \
     --config "$ridge_config" --resume
+}
+
+fit_residual() {
+  # Stage 1 is verified against the saved baseline predictions before any fitting.
+  # Pure NumPy/SciPy on CPU; --resume reuses verified completed fits.
+  run_command "$python_bin" -s src/residual_rt_prediction.py \
+    --corpus "$corpus" --data-dir "$prepared_root" --results-dir "$results_root" \
+    --baseline-dir "$baseline_root" --sae-dir "$sae_root" --output-dir "$residual_root" \
+    --config "$ridge_config" --targets "${residual_targets[@]}" --resume
+}
+
+summarize_residual() {
+  run_command "$python_bin" -s src/residual_rt_prediction.py \
+    --output-dir "$residual_root" --config "$ridge_config" --summarize-only
+}
+
+interpret_features() {
+  run_command "$python_bin" -s src/feature_interpretation.py \
+    --corpus "$corpus" --regression-dir "$regression_root" \
+    --sae-dir "$sae_root" --data-dir "$prepared_root" \
+    --output-dir "$interpretation_root"
+}
+
+fetch_neuronpedia() {
+  # Reads/writes results/feature_interpretation and results/neuronpedia_cache.
+  run_command "$python_bin" -s src/neuronpedia_fetch.py --corpus "$corpus" --layers "${np_layers[@]}"
+}
+
+run_srp() {
+  # Requires the sparse-readout-prism checkout (see srp_interpret.py for its location).
+  run_command "$python_bin" -s src/srp_interpret.py --corpus "$corpus" \
+    ${device_args[@]+"${device_args[@]}"}
 }
 
 regression_notebook() {
@@ -239,6 +305,11 @@ case "$stage" in
   regression) fit_sae_regression ;;
   regression-notebook) regression_notebook ;;
   regression-report) run_command "$python_bin" -s src/sae_regression_diagnostics.py --corpus "$corpus" --regression-dir "$regression_root" --output-dir "$regression_root/diagnostics" ;;
+  residual) fit_residual ;;
+  residual-summary) summarize_residual ;;
+  interpret) interpret_features ;;
+  neuronpedia) fetch_neuronpedia ;;
+  srp) run_srp ;;
   export-reports) run_command "$python_bin" -s scripts/export_report_bundle.py ;;
   verify-reports) run_command "$python_bin" -s scripts/export_report_bundle.py --verify-only ;;
   latex) latex_notebook ;;
@@ -248,6 +319,26 @@ case "$stage" in
     ;;
   scaling-notebook)
     run_command "$python_bin" -s src/run_notebook.py --analysis scaling
+    ;;
+  pipeline)
+    prepare_data
+    extract_surprisal
+    verify_outputs
+    fit_baseline
+    export_diagnostics
+    extract_sae
+    sae_report
+    fit_sae_regression
+    run_command "$python_bin" -s src/sae_regression_diagnostics.py --corpus "$corpus" --regression-dir "$regression_root" --output-dir "$regression_root/diagnostics"
+    fit_residual
+    interpret_features
+    fetch_neuronpedia
+    run_srp
+    if [[ "$corpus" == both ]]; then
+      run_command "$python_bin" -s src/scaling_sensitivity.py --source-root "$regression_root" --output-dir "${SCALING_ROOT:-results/scaling_sensitivity_v1}"
+    else
+      echo "Skipping scaling sensitivity: it is declared for both corpora."
+    fi
     ;;
   all)
     check_environment
@@ -259,3 +350,16 @@ case "$stage" in
     export_diagnostics
     ;;
 esac
+
+# Completed runs (approximate wall-clock):
+# bash run.sh prepare both
+# bash run.sh extract both
+# bash run.sh verify both
+# bash run.sh baseline both
+# bash run.sh sae both          # SAE extraction (~4 min)
+# bash run.sh regression both   # nested ridge (~12 min)
+# bash run.sh residual both     # two-stage RT' analysis (~30-45 min)
+# bash run.sh interpret both    # logit lens + max-activating examples only
+# bash run.sh neuronpedia both  # Neuronpedia labels (cached after first fetch)
+# bash run.sh srp both          # SRP train (first run) + decomposition
+# bash run.sh pipeline both     # all of the above in one command

@@ -5,7 +5,7 @@ import re
 import numpy as np
 import pandas as pd
 try:
-    from .pipeline_utils import file_record, read_table, sha256_file, write_json
+    from ..src.pipeline_utils import file_record, read_table, sha256_file, write_json
 except ImportError:
     from pipeline_utils import file_record, read_table, sha256_file, write_json
 

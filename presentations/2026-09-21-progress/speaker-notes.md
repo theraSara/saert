@@ -1,30 +1,20 @@
-# SparseRT meeting notes
+Research question and evidence levels
 
-Suggested pace: slides 1–14 in 12–15 minutes. Slides 15–17 are optional backup.
+Question concerns features that may be weakly used or removed. I separate three claims: 
+    1. Prediction asks whether features help explain held-out RTs. 
+    2. Interpretation asks what those features track. 
+    3. Intervention asks what changes in the model when we edit them. 
 
-## 1. SparseRT
+Provo and Natural Stories provide complementary measurements, but they also differ in texts and participants. 
+The current outcome is the log of the arithmetic mean RT for each displayed region or word, not the average of individual log RTs. 
+<!-- Participant-level modeling is a later robustness analysis. -->
 
-Opening, about 30 seconds: I have built a corrected pipeline from reading-time data to sparse GPT-2 features and tested whether they improve prediction on unseen stories. We now have predictive evidence, a meaningful difference between corpora, and a new scaling check. The next question is what drives the gains before we interpret features or intervene on them.
+Project map:
+    1. 
+    2. 
+    3. 
+    4. 
 
-Source: docs/project_plan.md; docs/sae_prediction_findings.md
-
-## 2. Research question and evidence levels
-
-About 50 seconds: The professor’s question concerns features that may be weakly used or removed. I separate three claims. Prediction asks whether features help explain held-out RTs. Interpretation asks what those features track. Intervention asks what changes in the model when we edit them. We have completed an initial predictive comparison. We have not established a causal mechanism in human readers.
-
-Source: docs/project_plan.md
-
-## 3. Data and outcome definition
-
-About 45 seconds: Provo and Natural Stories provide complementary measurements, but they also differ in texts and participants. We cannot attribute the result difference entirely to reading modality. The current outcome is the log of the arithmetic mean RT for each displayed region or word, not the average of individual log RTs. Participant-level modeling is a later robustness analysis.
-
-Source: docs/baseline_methods.md; docs/project_plan.md
-
-## 4. Workflow and current progress
-
-About 60 seconds: This is the project map. The first four stages are implemented. I keep the language-model probability path separate from the representation path. The final two stages need additional evidence, rather than automatically labeling a predictive feature as a cognitive process. Every stage saves reproducible artifacts and metadata.
-
-Source: docs/project_plan.md; run.sh
 
 ## 5. A fair comparison beyond surprisal
 

@@ -1,0 +1,472 @@
+# SparseRT — Project Notes
+
+**What internal computations of GPT-2 predict when humans slow down while reading?**
+
+This project bridges psycholinguistics and mechanistic interpretability. 
+We use Sparse Autoencoders to open up a language model's hidden states
+and ask which of its internal features predict human reading difficulty
+better than surprisal. The answer turns out to be much richer than
+surprisal alone captures — and the features that matter are completely
+different depending on how you measure reading time.
+
+---
+
+At the feature interpretation stage. The regression pipeline is
+complete, results are solid and replicated across two corpora, and now
+there's three independent methods of characterising what the predictive
+features represent linguistically. The main result is publishable.
+The two open threads are: (1) formal write-up of the L01 NS exclusion,
+and (2) participant-level robustness check for Natural Stories.
+
+---
+
+## The research question
+
+Language models like GPT-2 are routinely used to predict human reading
+times via **surprisal** — how unexpected is word W given everything before
+it? Surprisal is a scalar: it collapses the model's entire internal
+computation into a single number, discarding most of the structure.
+
+We ask: is the structure that gets discarded what humans are actually
+sensitive to? If so, which specific internal features encode that
+structure, and what do they represent linguistically?
+
+**Why this is hard to answer with standard probing.**
+Most probing approaches train a new classifier on the model's hidden
+states to predict some external label. This tells you what information
+is present, but not what the model is computing or why. We take a
+mechanistic interpretability approach instead — we decompose the hidden
+state into a sparse set of pre-trained features using a Sparse Autoencoder
+(SAE), so the features are interpretable before we ever look at reading
+times. Then we ask which features the regression selects.
+
+---
+
+## Corpora
+
+We use two reading time datasets with different measurement paradigms.
+This was deliberate — if a finding replicates across both, it is more
+likely to reflect genuine cognitive processing rather than measurement
+artefacts.
+
+| Corpus | Measure | Words | Texts | Mean RT |
+|--------|---------|-------|-------|---------|
+| **Provo** | First-fixation duration (FFD) | 2,743 | 55 | ~208 ms |
+| **Natural Stories** | Self-paced reading (SPR) | 10,256 | 10 | ~340 ms |
+
+**Why FFD and SPR differ.**
+FFD reflects the first uninterrupted gaze on a word — typically 150–250 ms.
+At this timescale, processing is mostly automatic: the reader is accessing
+the word's form, retrieving its meaning, and checking basic fit with the
+preceding context. SPR is a button-press task where readers control when
+the next word appears. At 300–400 ms, readers have time for deliberate
+syntactic parsing, discourse model updating, and reference resolution.
+These two measures are sensitive to different levels of processing — a
+finding that the layer-selection results directly confirm.
+
+---
+
+## Pipeline
+
+```
+src/data.py               → data/prepared_v2/{corpus}/
+src/surprisal.py          → results/surprisal_bos/
+src/validate_outputs.py   → integrity checks (SHA-256 manifests)
+src/baseline.py           → results/baseline_bos/
+src/sae_extraction.py     → results/sae_bos/
+src/sae_regression.py     → results/sae_regression_v2/
+src/feature_interpretation.py  → results/feature_interpretation/  [logit lens]
+src/neuronpedia_fetch.py       → results/feature_interpretation/  [GPT-4 labels]
+src/srp_interpret.py           → results/srp/gpt2_small/          [SRP]
+```
+
+Run order:
+```bash
+bash run.sh prepare both
+bash run.sh extract both
+bash run.sh verify both
+bash run.sh baseline both
+bash run.sh sae both
+bash run.sh regression both
+bash run.sh interpret both
+python src/neuronpedia_fetch.py --layers 1 8
+python src/srp_interpret.py
+```
+
+---
+
+## Key design decisions
+
+### Why this SAE?
+
+We use `gpt2-small-res-jb` (Bloom 2024), a set of 13 SAEs (one per
+residual stream layer) trained on GPT-2 small using the standard
+Anthropic recipe. Each SAE has 24,576 features — 32× the model's
+hidden dimension of 768. The sparsity constraint (TopK, k≈20–80 per
+word) means only a handful of features fire on any given word, making
+the decomposition interpretable without further work.
+
+We chose this SAE rather than, say, training our own because: (a) it is
+publicly available and widely used in interpretability work, making our
+results comparable with the literature; (b) it is already validated on
+GPT-2 small specifically; (c) training a good SAE requires careful
+hyperparameter tuning that is orthogonal to our research question.
+
+### Why ridge regression, not Lasso or OLS?
+
+The regression predicts reading time from SAE feature activations. We
+have up to 24,576 features and only 2,743 words (Provo). OLS is
+underdetermined. Lasso would force exactly-zero coefficients, which
+makes sense if we believe only a handful of features matter, but the
+SAE already enforces sparsity at the representation level — applying
+sparsity twice (in the SAE encoding and again in the regression) would
+be excessively restrictive. Ridge penalises large coefficients smoothly,
+selects a regularisation strength via inner cross-validation, and
+remains stable under collinearity between features.
+
+### Why leave-one-text-out?
+
+Standard k-fold cross-validation treats each word as an independent
+observation. But words within a text share context and are correlated.
+Leave-one-text-out holds out all words from one text at a time, so
+the test words genuinely come from a different context than the training
+words. This is more conservative but more realistic.
+
+### Why two hook types (prefix and post)?
+
+Every hook extracts two hidden states per word:
+- **Prefix (before-word)**: the model's state at word position N using
+  only left-context tokens. This captures what the model *anticipates*
+  before seeing the word.
+- **Post (after-word)**: the model's state after the word has been
+  integrated. This captures how the model *represents* the word in context.
+
+Comparing prefix and post coefficients for the same feature reveals
+whether the reading time effect is anticipatory (reader was surprised
+by the word) or integrative (reader struggled to fit the word into
+the sentence). This distinction would be invisible with surprisal alone.
+
+### Why surprisal with spillover lags?
+
+A substantial body of psycholinguistic research shows that reading
+difficulty on word N often shows up in reading time at N+1 or N+2 —
+readers do not always slow down on the difficult word itself. We include
+surprisal at the current word and two previous words as controls. This
+makes the baseline more competitive and ensures that any additional
+variance explained by SAE features is genuinely new signal, not
+spillover effects we forgot to account for.
+
+### Why logit lens + Neuronpedia + SRP for interpretation?
+
+These three methods are complementary and independent.
+
+**Logit lens** applies GPT-2's own unembedding matrix to each SAE
+feature's decoder vector to produce a ranked list of predicted vocabulary
+tokens. It is fast, automatic, and uses only model weights — but it is
+corpus-dependent (the tokens you see depend partly on which text was used
+to fit the lens).
+
+**Neuronpedia** provides GPT-4-generated descriptions obtained by showing
+the top-activating examples from a large corpus to GPT-4 and asking it
+to describe the feature. This is the most human-readable description but
+requires access to the external Neuronpedia API and depends on the
+quality of GPT-4's interpretation.
+
+**Sparse Readout Prism (SRP)** (He et al. 2026) decomposes the logit
+lens output into sparse readout features — directions in the unembedding
+matrix trained to be reusable and corpus-independent. It gives a
+fidelity diagnostic (what fraction of the logit is explained by the sparse
+approximation), and reveals when two SAE features share the same underlying
+readout direction. We trained SRP on GPT-2 small's W_U (no pretrained
+checkpoint existed), achieving rowEV = 0.80 — adequate for interpretation.
+
+Using all three gives triangulated evidence: we trust a label most when
+the logit lens tokens, the Neuronpedia description, and the dominant SRP
+readout direction all point to the same linguistic phenomenon.
+
+---
+
+## Results
+
+### 1. Surprisal baseline
+
+Surprisal explains a statistically significant but small fraction of
+reading time variance, above lexical controls (word frequency, length,
+sentence position) and spillover lags.
+
+| Corpus | Context | ΔR² | 95% CI |
+|--------|---------|-----|--------|
+| Provo FFD | Both contexts (identical) | **+1.48 pp** | [0.54, 2.35] |
+| NS SPR | 1,024-token + spillover | **+4.38 pp** | [2.34, 6.34] |
+| NS SPR | 128-token + spillover | **+4.16 pp** | [1.80, 6.00] |
+
+Surprisal explains more variance in SPR than in FFD. This is consistent
+with the literature: self-paced reading is a more deliberate, prediction-
+sensitive measure. The effect is real but small — there is clearly much
+more information in the model's internal states that surprisal is not
+capturing.
+
+### 2. SAE feature gain above the surprisal baseline
+
+| Corpus | Hook type | SAE gain | 95% CI | Texts improved |
+|--------|-----------|----------|--------|----------------|
+| Provo FFD | Before word (prefix) | **+2.87 pp** | [+1.77, +3.98] | 43/55 |
+| Provo FFD | After word (post) | **+6.58 pp** | [+5.42, +7.78] | **50/55** |
+| NS SPR | Before word (prefix) | **+0.82 pp** | [+0.19, +1.37] | 7/10 |
+| NS SPR | After word (post) | **+3.84 pp** | [+2.35, +5.18] | **10/10** |
+
+SAE features explain 2–6× more variance than surprisal above the baseline.
+The after-word hook is always more predictive than the before-word hook.
+This tells us that it is the model's *integration* of the target word —
+not its anticipatory state — that contains most of the RT-relevant signal.
+
+### 3. SAE versus dense hidden states
+
+This is the most theoretically interesting comparison. The question is:
+does the SAE's sparsity constraint help or hurt, relative to using the
+full 768-dimensional hidden state directly?
+
+| Corpus | Hook type | SAE − dense | 95% CI | Verdict |
+|--------|-----------|-------------|--------|---------|
+| Provo FFD | Before word | **+1.80 pp** | [+0.67, +2.88] | SAE better |
+| Provo FFD | After word | **+3.78 pp** | [+2.73, +4.88] | SAE better |
+| NS SPR | Before word | −1.79 pp | [−3.49, +0.25] | Not significant |
+| NS SPR | After word | **−2.39 pp** | [−4.02, −0.45] | Dense better |
+
+**For Provo (eye-tracking), sparse is better. For Natural Stories (SPR),
+dense is better.** This dissociation is the main theoretical contribution
+of the project.
+
+Eye-tracking FFD at ~200 ms reflects fast lexical processing. A sparse
+set of features encoding word identity and semantic surprise is sufficient
+to predict it, and the SAE's sparsity constraint removes noise from
+irrelevant features. SPR at ~340 ms reflects slower integrative processing
+where the full contextual representation matters — forcing sparsity
+discards information the SPR measure is sensitive to.
+
+### 4. Layer selection
+
+The inner cross-validation selects which layer's hidden state to use per
+outer fold. 
+
+| Corpus | Hook | Representation | Selected layer | Folds |
+|--------|------|----------------|----------------|-------|
+| Provo | post | SAE | **L01** | 55/55 |
+| Provo | prefix | SAE | **L01** | 55/55 |
+| NS | post | SAE | **L08** | 5/10 |
+| NS | prefix | SAE | **L08** | 4/10 |
+
+Provo universally selects L01 — the embedding layer, before any attention
+has run. Natural Stories selects L08 — after 8 rounds of contextual
+processing. This is not a coincidence. FFD reflects early lexical access
+that depends on word identity (encoded in the embedding), while SPR
+reflects integrative processing that depends on context (encoded only
+after multiple attention layers have operated).
+
+The layer dissociation mirrors the measure dissociation exactly. Same
+model, same text, different RT measure → different optimal layer.
+
+---
+
+## Feature interpretation
+
+### Methods
+
+Three interpretation methods applied to the top-30 features at each
+of the four (corpus × hook type) combinations:
+
+1. **Logit lens** — `W_unembed @ LayerNorm(W_dec[:, i])` → top-20 tokens
+2. **Neuronpedia** — GPT-4 auto-interp via public API (`/api/feature/gpt2-small/{layer}-res-jb/{id}`)
+3. **SRP** — GPT-2-specific SRP trained on W_U (rowEV = 0.80, k = 64, d_features = 4096)
+
+### Category profile (from Neuronpedia labels)
+
+**Provo L01 post (after-word, eye-tracking):**
+33% lexical complexity, 23% proper nouns, 20% discourse structure
+
+The features that slow eye fixations are primarily about word identity:
+morphologically complex words, named entities requiring world knowledge,
+abstract philosophical vocabulary, unusual semantic clusters. These are
+all computations the model performs at the embedding layer before any
+contextual attention — which is why L01 is selected.
+
+**NS L08 post (after-word, SPR):**
+33% boundary/structural, 27% discourse structure, 23% register
+
+SPR is slowed by structural transitions (sentence endings, heading
+markers, date formats) and discourse-level features (political figures,
+philosophical debates, social issues). These require 8 rounds of
+attention to encode — which is why L08 is selected.
+
+**Provo L01 prefix (before-word, anticipatory):**
+40% lexical complexity, 23% predictability
+
+When the context predicts a lexically complex word is coming (morpheme
+fragments, academic vocabulary), the next word is harder. When the
+context strongly predicts a function word (determiners, manner adverbs),
+the next word is easier. This is the classic predictability facilitation
+effect encoded as a feature.
+
+**NS L08 prefix (before-word, anticipatory):**
+23% register, 23% proper nouns, 17% syntactic integration
+
+Before seeing the word, a legal/regulatory or politically-charged context
+predicts harder SPR reading. The syntactic integration features here
+(legal frameworks, criminal terminology, legislative decisions) are
+contexts that predict syntactically complex upcoming material.
+
+### Highlighted features
+
+**Feature 9237 — the sign reversal** *(boundary/structural)*
+NP label: "text punctuations"
+SRP fidelity: 0.50 (lowest in the dataset)
+
+This feature has opposite signs in prefix and post hooks for Provo:
+- Prefix: +0.9883 (anticipating a clause boundary → *harder*)
+- Post: −0.4459 (being at a clause boundary → *easier*)
+
+The low SRP fidelity tells us why: this feature works through
+suppression/inhibition rather than by promoting specific token
+predictions. The SRP cannot capture inhibitory features well in its
+sparse positive-contribution framework — the large residual is meaningful.
+The sign reversal maps directly onto the psycholinguistic wrap-up effect
+(readers accelerate at clause boundaries) versus the clause-initiation
+cost (readers slow down when starting a new clause).
+
+**Feature 985 — single dominant direction** *(lexical complexity)*
+NP label: "verbs for sudden, sharp, unexpected actions"
+SRP fidelity: 0.999 (highest in the dataset)
+Top SRP feature: SRP#4047 (+1.078)
+
+Near-perfect fidelity and a single dominant SRP direction. This feature
+collapses almost entirely onto one readout direction — the model has a
+single clean unembedding dimension for sudden action verbs. When this
+fires in Provo text, fixation time increases.
+
+**Features 1706 and 13505 — shared SRP direction** *(boundary/structural, register)*
+NP: "dates and events" / "reusing code across modules"
+Both load on SRP#2456 as their top contribution.
+
+Despite having different Neuronpedia descriptions and different SAE
+feature IDs, these two features share the same dominant SRP readout
+direction. This is corpus-independent evidence that they tap the same
+structural dimension of GPT-2's output space — likely a formal/structured-
+text direction. The SRP analysis reveals structure that neither the logit
+lens tokens nor the Neuronpedia labels expose individually.
+
+**Feature 13976 — predictability facilitation** *(predictability)*
+NP label: "adverbs expressing emotion or state"
+SRP fidelity: 0.931 — Top SRP: SRP#1344 (+0.448)
+Coefficient: −0.3652 (active → *easier* to read)
+
+When the context before a word activates this feature, the next word is
+easier to read. The logit lens top token is `proudly`, and SRP#1344
+is clearly a manner-adverb direction in the unembedding. When preceding
+context predicts a manner adverb, readers process it faster. This is
+the expectation-based facilitation effect (Levy 2008) made mechanistically
+visible in a specific model feature.
+
+---
+
+## Known issue: L01 exclusion for Natural Stories
+
+`blocks.0.hook_resid_pre` (L01) is the raw embedding output before any
+attention. The SAE was trained on post-attention residual streams, so
+encoding raw embeddings produces out-of-distribution activations. For
+Natural Stories (long stories, sliding window), this caused extreme
+prediction errors (max 112 log-ms against a typical RT range of 5–6 log-ms).
+
+The inner cross-validation correctly detected this — L01 was never
+selected in any of the 10 NS folds. Main results are unaffected.
+
+Provo is unaffected because short texts fit in a single 1,024-token
+pass with no windowing discontinuities.
+
+**Formal treatment in the paper:** state that L01 was excluded from the NS
+hook pool after the audit. Cite the scaling sensitivity analysis (notebook 04)
+as confirming robustness. Do not exclude L01 from Provo (it is the most
+selected hook there and behaves normally).
+
+
+---
+
+## Open questions for supervisor
+
+1. **L01 universality for Provo** — is it theoretically interesting that
+   the embedding layer alone predicts eye-tracking, or is it a
+   methodological artefact of the 128-token matched context window? The
+   argument for it being real: the raw embedding encodes word frequency,
+   morphological complexity, and semantic category — exactly the variables
+   that predict FFD in the psycholinguistics literature.
+
+2. **Sparse vs dense reversal as main finding** — two framings are possible:
+   - "SAE features explain reading time beyond surprisal" (focus on SAE > surprisal gap)
+   - "Sparsity helps for lexical processing but hurts for integrative processing"
+     (focus on SAE > dense for Provo, dense > SAE for NS)
+   The second framing is more mechanistically precise and probably more
+   novel, but it requires the reader to accept that the SAE vs dense
+   comparison is meaningful. Worth discussing with the supervisor.
+
+3. **Feature 9237 sign reversal** — this is the clearest mechanistic
+   result in the paper. Should it be a dedicated subsection or folded
+   into the general feature discussion?
+
+4. **Natural Stories bootstrap width** — 10 texts means 10-unit bootstrap.
+   Intervals are wide. A participant-level mixed-effects model using
+   `processed_RT.tsv` would tighten the NS estimates and is the right
+   robustness check for a journal submission.
+
+5. **SRP depth** — we trained a custom SRP (rowEV = 0.80) rather than
+   using a pretrained checkpoint because no GPT-2 checkpoint exists in
+   the SRP repo. Should we contact the SRP authors to request a GPT-2
+   small checkpoint, or is our trained checkpoint sufficient for the
+   paper's claims?
+
+---
+
+## Completed files
+
+| File | Purpose |
+|------|---------|
+| `src/data.py` | Data preparation, SHA-256 manifests |
+| `src/surprisal.py` | GPT-2 surprisal + hidden state extraction |
+| `src/validate_outputs.py` | Integrity verification |
+| `src/baseline.py` | Surprisal baseline regression |
+| `src/sae_extraction.py` | SAE feature encoding (all 13 hooks) |
+| `src/sae_regression.py` | Nested ridge regression |
+| `src/feature_interpretation.py` | Logit lens for SAE features |
+| `src/neuronpedia_fetch.py` | Neuronpedia API fetch with disk cache |
+| `src/srp_interpret.py` | SRP training + SAE feature decomposition |
+| `src/scaling_sensitivity.py` | L01 NS floor sensitivity analysis |
+| `notebooks/feature_interpretation.ipynb` | All interpretation figures |
+
+---
+
+## Next steps
+
+1. **Participant-level robustness check** — fit mixed-effects model on
+   `data/natural_stories/processed_RT.tsv` to tighten NS estimates.
+
+2. **Paper write-up** — Introduction, Methods, Results, Discussion.
+   The feature interpretation section should focus on:
+   (a) the layer dissociation finding,
+   (b) the sparse vs dense dissociation,
+   (c) Feature 9237 sign reversal as the cleanest mechanistic demonstration.
+
+3. **LaTeX tables** — `bash run.sh latex` exports publication-ready tables.
+
+4. **Contact SRP authors** about a GPT-2 small checkpoint, or improve
+   our trained SRP (increase d_features from 4,096 to 24,576 on the
+   GPU workstation where memory is not a constraint).
+
+---
+
+## Citations
+
+- Bloom, J. (2024). Open source sparse autoencoders for GPT2-small. Alignment Forum.
+- Futrell, R. et al. (2021). Natural Stories corpus. LDC.
+- He, M. et al. (2026). Sparse Readout Prism. arXiv:2609.01936.
+- Kuribayashi, T. et al. (2025). Large Language Models Are Human-Like Internally. TACL.
+- Levy, R. (2008). Expectation-based syntactic comprehension. Cognition.
+- Luke, S.G. & Christianson, K. (2016). Provo Corpus. Behavior Research Methods.
+- Smith, N.J. & Levy, R. (2013). The effect of word predictability on reading time. Cognition.

@@ -89,11 +89,18 @@ def tokenize_words(words, tokenizer):
     text, word_offsets = build_text_and_word_offsets(words)
     encoding = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False,
                          truncation=False)
-    ids = list(encoding["input_ids"])
-    offsets = [tuple(pair) for pair in encoding["offset_mapping"]]
+    # Cast to plain Python ints. Some versions of `transformers` inspect NumPy
+    # scalar IDs for optional TensorFlow support during decode(), which can fail
+    # if TensorFlow is installed but incompatible with the local NumPy version.
+    ids = [int(token_id) for token_id in encoding["input_ids"]]
+    offsets = [tuple(int(x) for x in pair) for pair in encoding["offset_mapping"]]
     if len(ids) != len(offsets) or not ids:
         raise ValueError("Tokenizer returned inconsistent IDs/offsets")
-    if tokenizer.decode(ids, clean_up_tokenization_spaces=False) != text:
+    if hasattr(tokenizer, "backend_tokenizer"):
+        decoded = tokenizer.backend_tokenizer.decode(ids, skip_special_tokens=False)
+    else:
+        decoded = tokenizer.decode(ids, clean_up_tokenization_spaces=False)
+    if decoded != text:
         raise ValueError("Tokenizer round trip does not reproduce the exact constructed stimulus")
     owners = {}
     for word_idx, (left, right) in enumerate(word_offsets):

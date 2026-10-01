@@ -37,3 +37,5 @@ Thumbs.db
 *.log
 tempCodeRunnerFile.py
 # Curated aggregate reports under reports/ are intentionally tracked.
+/sparse-readout-prism/
+/src/results/

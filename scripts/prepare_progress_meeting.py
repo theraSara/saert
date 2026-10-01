@@ -4,7 +4,7 @@ import json
 import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from src.report_bundle import verify_bundle,read_summary
+from archive.report_bundle import verify_bundle,read_summary
 from src.utils import PALETTE
 
 def main():

@@ -6,7 +6,7 @@ import subprocess
 import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from src.report_bundle import verify_bundle
+from archive.report_bundle import verify_bundle
 
 def main():
     names=subprocess.check_output(['git','ls-files','-z'],cwd=ROOT).decode().split('\0')

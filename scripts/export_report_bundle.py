@@ -7,7 +7,7 @@ import sys
 import pandas as pd
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from src.report_bundle import digest, verify_bundle
+from archive.report_bundle import digest, verify_bundle
 
 SECTIONS = {
  'baseline': ('results/baseline_bos/diagnostics',

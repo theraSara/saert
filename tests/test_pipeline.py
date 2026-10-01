@@ -147,7 +147,7 @@ class AlignmentTests(unittest.TestCase):
         words = ["'Admiral", "Café", "isn't", "unbelievable!", "👋", "NA"]
         text, ids, _, spans = tokenize_words(words, self.tokenizer)
         self.assertEqual(text, " ".join(words))
-        self.assertEqual(self.tokenizer.decode(ids), text)
+        self.assertEqual(self.tokenizer.backend_tokenizer.decode(ids, skip_special_tokens=False), text)
         self.assertEqual([i for s, e in spans for i in range(s, e+1)], list(range(len(ids))))
         self.assertTrue(any(e > s for s, e in spans))
 
@@ -252,7 +252,10 @@ class WindowTests(unittest.TestCase):
         self.assertIsNone(states)
 
     def test_real_small_transformer_causality_and_single_window_parity(self):
-        from transformer_lens import HookedTransformer, HookedTransformerConfig
+        try:
+            from transformer_lens import HookedTransformer, HookedTransformerConfig
+        except ModuleNotFoundError as exc:
+            self.skipTest("transformer_lens is not installed in this environment")
         model = HookedTransformer(HookedTransformerConfig(n_layers=2, d_model=16, n_ctx=32,
             d_head=8, n_heads=2, d_mlp=32, d_vocab=20, act_fn="gelu", normalization_type="LN",
             seed=4, device="cpu"))
