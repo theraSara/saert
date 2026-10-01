@@ -272,3 +272,46 @@ By the end of the meeting, I want to decide:
 - whether the current results are enough to move deeper into feature interpretation,
 - which caveats need to be foregrounded,
 - and what validation step should come next.
+
+---
+
+## Addendum: how I will explain the new clarification questions
+
+### Why did the analysis focus on Provo L01 and Natural Stories L08?
+
+These layers were selected by the model-selection procedure, not chosen by hand. In the nested cross-validation setup, each held-out text is tested only after the best layer and ridge penalty are chosen using the remaining training texts.
+
+**Provo:** the SAE model selected **L01 in 55/55 folds** for both before-word and after-word states. That is very stable. Because L01 is early in GPT-2, I should describe this as an early lexical/local signal: word form, frequency-like structure, punctuation, position, and short-context cues. I should avoid claiming that Provo L01 is a deep syntactic or discourse layer.
+
+**Natural Stories:** the SAE model selected **L08 most often**, but less consistently: about half of the folds for after-word and slightly fewer for before-word. That means L08 is the best primary hook for interpretation, but the layer story is less stable than Provo. The safer explanation is: Natural Stories seems to draw on mid-layer contextual representations, which makes sense for longer, syntactically varied self-paced reading materials.
+
+The new heatmap in `03_rt_prediction.ipynb` visualizes this directly: Provo has a clear dark cell at L01, while Natural Stories has a peak at L08 with some neighboring-layer variation.
+
+### How should I explain residual RT, or RT′?
+
+Residual RT means “what is left after removing the easy part.” I first predict reading time from controls such as word frequency, length, position, and related lexical variables. In the stricter version, I also remove surprisal. The residual is:
+
+> observed reading time − predicted reading time from the baseline variables
+
+So RT′ is the part of reading time that the baseline did not explain. Predicting RT′ is a stronger test than predicting raw reading time because it asks whether dense activations or SAE features explain something beyond frequency and surprisal.
+
+The current results say:
+
+- In **Provo**, SAE L01 still predicts residual RT strongly, especially after-word. This means the SAE features capture something not fully explained by the controls and surprisal, although the content may still be early lexical/local information.
+- In **Natural Stories**, the after-word state is stronger than the before-word state. Dense L08 is stronger than SAE L08, which suggests that some Natural Stories signal is distributed in the dense representation and not fully captured by the current sparse feature readout.
+- The before-word Natural Stories residual result is weaker and should be presented cautiously.
+
+### What is Sparse Readout Prism in my implementation?
+
+Sparse Readout Prism is an interpretation tool for asking what an SAE feature points toward in GPT-2’s output vocabulary space.
+
+The practical intuition is:
+
+1. An SAE feature has a decoder vector, which is a direction in the model’s residual stream.
+2. A logit lens maps that direction to tokens: which words would this feature increase or decrease?
+3. SRP decomposes that readout direction into a sparse set of vocabulary-space components.
+
+In my implementation, `src/srp_interpret.py` loads GPT-2’s unembedding matrix, trains or loads a TopK sparse dictionary over that vocabulary geometry, and then decomposes selected SAE decoder vectors through that dictionary. The output gives logit-lens tokens, SRP components, and fidelity diagnostics.
+
+The key caveat: SRP supports interpretation of the feature’s readout direction. It does not prove that the feature causally changes human reading time. For the meeting, I should present it as a microscope for feature meaning, not as the main prediction result.
+
